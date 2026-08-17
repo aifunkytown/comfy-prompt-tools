@@ -8,10 +8,7 @@ csv_file may also be a directory. In that case every *.csv file found
 directly inside it (not counting rerun_log.csv) is processed, one after
 another.
 
-The workflow is loaded and converted to API format up front, before anything
-is queued (see "Getting the workflow template" below for why: browser-based
-conversion of a saved workflow isn't safe to interleave with an
-already-progressing queue).
+The workflow is loaded up front, before anything is queued.
 
 LoRA routing by prompt content
 -------------------------------
@@ -24,17 +21,8 @@ turned on together. Nothing else about the workflow changes.
 
 Getting the workflow template
 ------------------------------
---workflow can point at either:
-  - A regular saved ComfyUI workflow (Workflow menu -> Save, or one of the
-    files under ComfyUI's user/default/workflows folder). The script will
-    automatically convert it using ComfyUI's own conversion logic, run via
-    a headless browser pointed at --server, so bypassed nodes, primitive
-    nodes, and subgraphs are all resolved correctly. Requires:
-        pip install playwright
-        playwright install chromium
-  - An already API-format export (Workflow menu -> Export (API), only
-    visible once "Dev mode Options" is enabled in ComfyUI's settings). Used
-    as-is, no browser/conversion needed.
+--workflow must point at an API-format export (Workflow menu -> Export (API),
+only visible once "Dev mode Options" is enabled in ComfyUI's settings).
 
 This is fire-and-forget: each prompt is queued on the ComfyUI server and the
 script moves on immediately without waiting for the image to render.
@@ -54,9 +42,7 @@ Usage
     # Directory given: run every *.csv directly inside it
     python rerun_prompts_comfyui.py "F:\\Programs\\ComfyFiles\\output\\SavedFromProfile"
 
-Requires: only the Python standard library, unless --workflow points at a
-saved (non-API-format) workflow, in which case playwright is also needed
-(see above).
+Requires: only the Python standard library.
 """
 
 import argparse
@@ -169,34 +155,7 @@ def is_api_format(data):
     )
 
 
-def convert_ui_workflow_via_browser(server, ui_workflow):
-    """Convert a saved (UI-format) ComfyUI workflow into API-format by driving
-    ComfyUI's own frontend conversion logic (app.loadGraphData / app.graphToPrompt)
-    through a headless browser. This correctly handles bypassed nodes, primitive
-    nodes, and subgraphs, since it's the exact same code ComfyUI's UI uses."""
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        try:
-            page = browser.new_page()
-            page.goto(server, wait_until="domcontentloaded")
-            page.wait_for_function(
-                "window.app && typeof window.app.graphToPrompt === 'function'", timeout=30000
-            )
-            return page.evaluate(
-                """async (wf) => {
-                    await window.app.loadGraphData(wf);
-                    const result = await window.app.graphToPrompt();
-                    return result.output;
-                }""",
-                ui_workflow,
-            )
-        finally:
-            browser.close()
-
-
-def load_workflow_template(workflow_path, server):
+def load_workflow_template(workflow_path):
     raw = json.loads(workflow_path.read_text(encoding="utf-8"))
 
     if "prompt" in raw and isinstance(raw["prompt"], dict) and is_api_format(raw["prompt"]):
@@ -205,30 +164,13 @@ def load_workflow_template(workflow_path, server):
     if is_api_format(raw):
         return raw
 
-    print(f"{workflow_path} looks like a saved ComfyUI workflow (not API format).")
-    print(f"Converting it via ComfyUI at {server} ...")
-    try:
-        template = convert_ui_workflow_via_browser(server, raw)
-    except ImportError:
-        print(
-            "Error: converting a saved workflow requires playwright.\n"
-            "    pip install playwright\n"
-            "    playwright install chromium\n"
-            "Alternatively, export the workflow in API format yourself: in ComfyUI, enable\n"
-            "'Dev mode Options' in Settings, then use 'Export (API)' in the Workflow menu.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: failed to convert workflow via browser: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    if not is_api_format(template):
-        print("Error: conversion did not produce a valid API-format workflow.", file=sys.stderr)
-        sys.exit(1)
-
-    print("Conversion succeeded.")
-    return template
+    print(
+        f"Error: {workflow_path} is not an API-format workflow.\n"
+        "Export it in API format: in ComfyUI, enable 'Dev mode Options' in Settings,\n"
+        "then use 'Export (API)' in the Workflow menu.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 # Keyword -> LoRA mapping, kept together in one place so it's easy to find and
@@ -251,14 +193,14 @@ def select_loras(prompt_text):
     ]
 
 
-def load_workflow_bundle(workflow_path, server):
-    """Load a workflow file (converting it if needed) and return its template plus
+def load_workflow_bundle(workflow_path):
+    """Load an API-format workflow file and return its template plus
     positive/negative/SaveImage/Power-Lora-Loader node ids."""
     if not workflow_path.is_file():
         print(f"Error: workflow file not found: {workflow_path}", file=sys.stderr)
         sys.exit(1)
 
-    template = load_workflow_template(workflow_path, server)
+    template = load_workflow_template(workflow_path)
     positive_id, negative_id = find_prompt_node_ids(template)
     if not positive_id:
         print(f"Error: could not find a CLIPTextEncode/positive prompt node in {workflow_path}", file=sys.stderr)
@@ -382,7 +324,7 @@ def main():
     # Phase 2: load/convert the workflow once, before queuing a single prompt. Once
     # prompts start landing in ComfyUI's queue, driving the browser to convert a
     # saved workflow is no longer safe to interleave with that.
-    template, positive_id, negative_id, save_ids, lora_node_id = load_workflow_bundle(workflow_path, args.server)
+    template, positive_id, negative_id, save_ids, lora_node_id = load_workflow_bundle(workflow_path)
 
     # Phase 3: queue everything. Purely stdlib HTTP calls from here on - no browser.
     log_path = Path(args.log) if args.log else default_log_dir / "rerun_log.csv"

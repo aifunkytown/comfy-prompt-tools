@@ -2,7 +2,7 @@
 
 A collection of standalone CLI scripts for extracting, cleaning, varying, and
 resubmitting image generation prompts around a local [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
-setup, plus a couple of helpers for pulling reference prompts from Civitai.
+setup.
 
 Each script is self-contained and runnable directly with `python`; nothing
 here requires installing the package (though `pyproject.toml` is included if
@@ -18,12 +18,7 @@ you'd rather `pip install -e .`).
 
 ```bash
 pip install -r requirements.txt
-playwright install chromium
 ```
-
-`playwright` is only needed for scripts that convert a saved (non-API-format)
-ComfyUI workflow, or that drive a real browser against Civitai
-(`civitai_login.py`, `scrape_civitai_prompts.py`).
 
 ### Local paths
 
@@ -64,8 +59,7 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   row's positive/negative prompt text against a workflow template that
   represents your current ComfyUI settings. Automatically turns on
   keyword-matched LoRAs (`LORA_RULES`) via the workflow's rgthree "Power Lora
-  Loader" node. Accepts either a saved ComfyUI workflow (converted
-  automatically via a headless browser) or an API-format export.
+  Loader" node. Requires an API-format workflow export.
 
 ### CSV housekeeping
 
@@ -77,15 +71,6 @@ pass the equivalent CLI flag, where available) to point at your own setup.
 - **`sort_prompts_by_category.py`** - Combines every CSV in the output folder
   into category files (`futa.csv` / `furry.csv` / `general_solo.csv` /
   `general_group.csv`) based on keywords and estimated subject count.
-
-### Civitai reference scraping
-
-- **`civitai_login.py`** - One-time interactive login helper: opens a real
-  browser window for you to log in, then saves the session to
-  `civitai_auth_state.json` (gitignored - **never commit this file**, it
-  contains live auth cookies) for reuse by `scrape_civitai_prompts.py`.
-- **`scrape_civitai_prompts.py`** - Scrapes prompts from a Civitai-style tag
-  feed into a CSV, deduplicated by prompt text, using the saved login session.
 
 Run any script with `--help` for its full argument list.
 

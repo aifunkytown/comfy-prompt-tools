@@ -5,7 +5,6 @@ description = "CLI tools for extracting, cleaning, varying, and resubmitting Com
 requires-python = ">=3.10"
 dependencies = [
     "Pillow",
-    "playwright",
 ]
 
 [tool.setuptools.packages.find]

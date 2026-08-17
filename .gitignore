@@ -8,13 +8,6 @@ venv/
 build/
 dist/
 
-# Playwright
-node_modules/
-
-# Saved login session for civitai_login.py / scrape_civitai_prompts.py -
-# contains live auth cookies, must never be committed.
-civitai_auth_state.json
-
 # Editor/OS cruft
 .vscode/
 .idea/
