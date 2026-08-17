@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Playwright
+node_modules/
+
+# Saved login session for civitai_login.py / scrape_civitai_prompts.py -
+# contains live auth cookies, must never be committed.
+civitai_auth_state.json
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Working files these scripts produce when pointed at real data - none of
+# this belongs in the repo, only the tools that generate/consume it do.
+*.csv
+*.csv.tmp
+rerun_log.csv

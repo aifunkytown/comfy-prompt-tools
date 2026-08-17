@@ -1,0 +1,16 @@
+[project]
+name = "comfy-prompt-tools"
+version = "0.1.0"
+description = "CLI tools for extracting, cleaning, varying, and resubmitting ComfyUI image generation prompts"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow",
+    "playwright",
+]
+
+[tool.setuptools.packages.find]
+include = ["comfy_prompt_tools*"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
