@@ -18,7 +18,12 @@ you'd rather `pip install -e .`).
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
+
+`playwright` is only needed by `rerun_prompts_comfyui.py`, and only when
+`--workflow` points at a saved (non-API-format) ComfyUI workflow rather than
+an already-exported API-format file - see that script's `--help` for details.
 
 ### Local paths
 
@@ -59,7 +64,8 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   row's positive/negative prompt text against a workflow template that
   represents your current ComfyUI settings. Automatically turns on
   keyword-matched LoRAs (`LORA_RULES`) via the workflow's rgthree "Power Lora
-  Loader" node. Requires an API-format workflow export.
+  Loader" node. Accepts either a saved ComfyUI workflow (converted
+  automatically via a headless browser) or an API-format export.
 
 ### CSV housekeeping
 
