@@ -276,8 +276,9 @@ def main():
     parser.add_argument("end_row", type=int, nargs="?", default=None, help="Last CSV row to rerun, 1-indexed inclusive (default: last row)")
     parser.add_argument(
         "--workflow",
-        default=r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t2i.json",
-        help="Workflow path used for every row. Resolved to an absolute path regardless of how it's given. (default: %(default)s)",
+        default=r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t2i_api.json",
+        help="Workflow path used for every row. Must be an API-format export - see 'Getting the workflow "
+             "template' above. Resolved to an absolute path regardless of how it's given. (default: %(default)s)",
     )
     parser.add_argument("--server", default="http://127.0.0.1:8000", help="ComfyUI server URL (default: http://127.0.0.1:8000)")
     parser.add_argument("--random-seed", action="store_true", help="Randomize seed/noise_seed inputs for each row instead of reusing the template's seed")

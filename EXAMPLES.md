@@ -28,9 +28,10 @@ python "comfy_prompt_tools\rerun_prompts_comfyui.py" "F:\Programs\ComfyFiles\out
 python "comfy_prompt_tools\rerun_prompts_comfyui.py" "F:\Programs\ComfyFiles\output\futa.csv" 50 200
 ```
 
-(`--workflow` defaults to `krea2_basic_t2i.json`, so it can usually be
-omitted - keyword-triggered LoRAs are handled automatically via `LORA_RULES`
-in `rerun_prompts_comfyui.py`.)
+(`--workflow` defaults to `krea2_basic_t2i_api.json` - an API-format export,
+regenerated whenever the live `krea2_basic_t2i.json` workflow changes - so it
+can usually be omitted. Keyword-triggered LoRAs are handled automatically via
+`LORA_RULES` in `rerun_prompts_comfyui.py`.)
 
 ## Cleanup (rewrite prompts via Ollama)
 
