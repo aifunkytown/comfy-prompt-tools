@@ -75,8 +75,12 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   (pooled regardless of date adjacency) into combined files named after the
   newest file in each group.
 - **`sort_prompts_by_category.py`** - Combines every CSV in the output folder
-  into category files (`futa.csv` / `furry.csv` / `general_solo.csv` /
-  `general_group.csv`) based on keywords and estimated subject count.
+  into category files (`futa.csv` / `furry.csv` / `animal.csv` /
+  `general_solo.csv` / `general_group.csv`) based on keywords and estimated
+  subject count. The keyword lists live in `category_keywords.json` next to
+  the script, not in the script itself - add a gitignored
+  `category_keywords.local.json` next to it for personal overrides/additions
+  (same override pattern as Claude Code's `settings.local.json`).
 
 Run any script with `--help` for its full argument list.
 

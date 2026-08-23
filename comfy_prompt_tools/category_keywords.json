@@ -1,0 +1,27 @@
+{
+    "categories": [
+        {
+            "name": "futa",
+            "keywords": ["futa", "futanari", "dickgirl"]
+        },
+        {
+            "name": "furry",
+            "keywords": ["furry", "anthro"]
+        },
+        {
+            "name": "animal",
+            "keywords": [
+                "animal", "wildlife", "creature", "beast",
+                "wolf", "fox", "dog", "cat", "horse", "tiger", "lion", "bear",
+                "deer", "rabbit", "bird", "eagle", "hawk", "owl", "snake",
+                "lizard", "dragon", "shark", "dolphin", "whale", "elephant",
+                "zebra", "cheetah", "leopard", "panther", "raccoon", "otter",
+                "goat", "sheep", "cow", "pig", "chicken", "duck"
+            ],
+            "exclude_keywords": [
+                "girl", "boy", "woman", "man", "person", "people", "human",
+                "lady", "guy"
+            ]
+        }
+    ]
+}

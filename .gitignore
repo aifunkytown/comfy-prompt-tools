@@ -19,3 +19,7 @@ Thumbs.db
 *.csv
 *.csv.tmp
 rerun_log.csv
+
+# Personal/local-only config overrides (same pattern as Claude Code's
+# settings.local.json overriding settings.json) - never committed.
+*.local.json
