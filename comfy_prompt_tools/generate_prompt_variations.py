@@ -478,37 +478,33 @@ def _extract_variations_list(response_text):
     return variations
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("csv_path", help="CSV file to read the source row from")
-    parser.add_argument("row", type=parse_row_range, help="1-indexed row number (matching the CSV's data rows) to base variations on, e.g. '100'. Also accepts an inclusive range like '100-105' to process multiple rows in one run, each getting its own output CSV")
-    parser.add_argument("aspect", nargs="?", default=None, help="The aspect of the prompt to vary, e.g. 'dress color'. Multiple aspects can be given at once, joined with 'and' or a comma, e.g. 'hair color and dress color' - the model will vary all of them together across the requested count. Omit this and use --random-aspects instead to have aspects chosen randomly from the vocab file")
-    parser.add_argument("count", type=int, help="Number of variations to generate")
-    parser.add_argument("--output", default=None, help="Output CSV path (default: <csv name>_row<row>_variations.csv, in a 'Variations' folder next to the input CSV)")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model to use (default: {DEFAULT_MODEL})")
-    parser.add_argument("--vocab", default=str(DEFAULT_VOCAB_PATH), help=f"JSON file mapping aspect name -> list of allowed values (default: {DEFAULT_VOCAB_PATH.name} next to this script, if present)")
-    parser.add_argument("--random-aspects", type=int, default=None, metavar="N", help="Instead of specifying 'aspect', randomly choose N aspects from the vocab file (only aspects with a non-empty value list are eligible)")
-    args = parser.parse_args()
+def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DEFAULT_MODEL, vocab_path=None, random_aspects=None):
+    """Core logic shared by the CLI (main()) and anything else driving this
+    programmatically (e.g. the GUI's Variations tab, via run() below).
+    csv_path is a Path, row_numbers a list of 1-indexed ints (see
+    parse_row_range), aspect/random_aspects mutually exclusive same as the
+    CLI. Raises SystemExit on unrecoverable errors, same convention as
+    run_test.py/lora_test.py."""
+    vocab_path = vocab_path or DEFAULT_VOCAB_PATH
+    vocab, random_exclude, multi_select, explicit_aspects = load_vocab(vocab_path)
 
-    vocab, random_exclude, multi_select, explicit_aspects = load_vocab(args.vocab)
-
-    if args.random_aspects is not None and args.aspect:
-        print("Error: provide either an aspect or --random-aspects, not both", file=sys.stderr)
+    if random_aspects is not None and aspect:
+        print("Error: provide either an aspect or random_aspects, not both", file=sys.stderr)
         sys.exit(1)
-    if args.random_aspects is None and not args.aspect:
-        print("Error: must provide either an aspect or --random-aspects", file=sys.stderr)
+    if random_aspects is None and not aspect:
+        print("Error: must provide either an aspect or random_aspects", file=sys.stderr)
         sys.exit(1)
 
-    if args.random_aspects is not None:
-        if args.random_aspects < 1:
-            print("Error: --random-aspects must be at least 1", file=sys.stderr)
+    if random_aspects is not None:
+        if random_aspects < 1:
+            print("Error: random_aspects must be at least 1", file=sys.stderr)
             sys.exit(1)
         base_eligible = [k for k, v in vocab.items() if v and k not in random_exclude]
-        if args.random_aspects > len(base_eligible):
-            print(f"Error: --random-aspects {args.random_aspects} exceeds the {len(base_eligible)} eligible aspect(s) in the vocab file", file=sys.stderr)
+        if random_aspects > len(base_eligible):
+            print(f"Error: random_aspects {random_aspects} exceeds the {len(base_eligible)} eligible aspect(s) in the vocab file", file=sys.stderr)
             sys.exit(1)
 
-    csv_path = Path(args.csv_path)
+    csv_path = Path(csv_path)
     if not csv_path.is_file():
         print(f"Error: CSV file not found: {csv_path}", file=sys.stderr)
         sys.exit(1)
@@ -518,14 +514,13 @@ def main():
         fieldnames = reader.fieldnames or []
         rows = list(reader)
 
-    row_numbers = args.row
     bad_rows = [r for r in row_numbers if r < 1 or r > len(rows)]
     if bad_rows:
         print(f"Error: row(s) {', '.join(map(str, bad_rows))} out of range (CSV has {len(rows)} data row(s))", file=sys.stderr)
         sys.exit(1)
 
-    if args.output and len(row_numbers) > 1:
-        print("Error: --output can't be used with a multi-row range (each row needs its own output file) - omit --output to use the default 'Variations' folder naming", file=sys.stderr)
+    if output and len(row_numbers) > 1:
+        print("Error: output path can't be used with a multi-row range (each row needs its own output file) - omit it to use the default 'Variations' folder naming", file=sys.stderr)
         sys.exit(1)
 
     cleaned_col = next((c for c in fieldnames if "cleaned" in c.lower()), None)
@@ -536,8 +531,8 @@ def main():
     # eligibility depends on whether that row's own prompt states an age
     # over 18 - explicit aspects are excluded from random selection unless
     # it does.
-    if args.random_aspects is None:
-        aspects_list = parse_aspects(args.aspect)
+    if random_aspects is None:
+        aspects_list = parse_aspects(aspect)
         aspects_changed = ", ".join(aspects_list)
         matched_vocab = [a for a in aspects_list if a.lower() in vocab]
         for a in matched_vocab:
@@ -567,20 +562,20 @@ def main():
             if cleaned_text:
                 print(f"Using '{cleaned_col}' column as the source prompt")
 
-            if args.random_aspects is not None:
+            if random_aspects is not None:
                 age = detect_age(original_prompt)
                 row_eligible = [k for k, v in vocab.items() if v and k not in random_exclude]
                 if age is None or age <= 18:
                     row_eligible = [a for a in row_eligible if a not in explicit_aspects]
-                if args.random_aspects > len(row_eligible):
+                if random_aspects > len(row_eligible):
                     age_note = "no age over 18 detected in this row's prompt, so explicit aspects are excluded" if (age is None or age <= 18) else "explicit aspects are eligible"
-                    print(f"Error: --random-aspects {args.random_aspects} exceeds the {len(row_eligible)} eligible aspect(s) for row {row_num} ({age_note}) - skipping", file=sys.stderr)
+                    print(f"Error: random_aspects {random_aspects} exceeds the {len(row_eligible)} eligible aspect(s) for row {row_num} ({age_note}) - skipping", file=sys.stderr)
                     failed += 1
                     continue
-                chosen = random.sample(row_eligible, args.random_aspects)
+                chosen = random.sample(row_eligible, random_aspects)
                 row_aspect = " and ".join(chosen)
                 age_desc = f"age {age} detected" if age is not None else "no age detected"
-                print(f"Randomly selected {args.random_aspects} aspect(s) for row {row_num} ({age_desc}): {', '.join(chosen)}")
+                print(f"Randomly selected {random_aspects} aspect(s) for row {row_num} ({age_desc}): {', '.join(chosen)}")
 
                 aspects_list = parse_aspects(row_aspect)
                 aspects_changed = ", ".join(aspects_list)
@@ -595,30 +590,30 @@ def main():
                     suffix = f" ({', '.join(tags)})" if tags else ""
                     print(f"Using controlled vocabulary for '{a}'{suffix}: {', '.join(vocab[a.lower()])}")
             else:
-                row_aspect = args.aspect
+                row_aspect = aspect
 
             print(f"Original prompt (row {row_num}): {original_prompt[:100]}")
-            print(f"Generating {args.count} variation(s) of '{row_aspect}' via {args.model} ...")
+            print(f"Generating {count} variation(s) of '{row_aspect}' via {model} ...")
 
             try:
-                variations = generate_variations(original_prompt, row_aspect, args.count, args.model, vocab, multi_select)
+                variations = generate_variations(original_prompt, row_aspect, count, model, vocab, multi_select)
             except Exception as e:
                 print(f"Error generating variations for row {row_num}: {e}", file=sys.stderr)
                 failed += 1
                 continue
 
-            if len(variations) < args.count:
-                print(f"Warning: model returned {len(variations)} variation(s), expected {args.count}", file=sys.stderr)
-            elif len(variations) > args.count:
-                variations = variations[: args.count]
+            if len(variations) < count:
+                print(f"Warning: model returned {len(variations)} variation(s), expected {count}", file=sys.stderr)
+            elif len(variations) > count:
+                variations = variations[:count]
 
             negative = (source_row.get("Negative Prompt") or "").strip()
             other = (source_row.get("Other Parameters") or "").strip()
             source_format = source_row.get("Source Format") or ""
             base_name = Path(source_row.get("File Name") or f"row{row_num}").stem
 
-            if args.output:
-                output_path = Path(args.output)
+            if output:
+                output_path = Path(output)
             else:
                 variations_dir = csv_path.parent / "Variations"
                 variations_dir.mkdir(parents=True, exist_ok=True)
@@ -663,6 +658,58 @@ def main():
         print(f"\nDone. {succeeded} row(s) succeeded, {failed} failed.")
         if failed and not succeeded:
             sys.exit(1)
+
+
+def run(config_path):
+    """JSON-config-driven entry point, same convention as
+    run_test.run()/lora_test.run() (a caller like the GUI can drive this
+    without going through argparse). Config file format:
+        {
+            "csv_path": "...",
+            "row": "100" or "100-105",
+            "aspect": "hair color and dress color",   // or "random_aspects" instead
+            "random_aspects": 3,
+            "count": 10,
+            "model": "gemma4:12b",                      // optional
+            "vocab_path": "...",                        // optional
+            "output": "..."                             // optional, single-row only
+        }
+    """
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    run_batch(
+        csv_path=Path(config["csv_path"]),
+        row_numbers=parse_row_range(str(config["row"])),
+        aspect=config.get("aspect"),
+        count=config["count"],
+        output=config.get("output"),
+        model=config.get("model", DEFAULT_MODEL),
+        vocab_path=config.get("vocab_path") or DEFAULT_VOCAB_PATH,
+        random_aspects=config.get("random_aspects"),
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("csv_path", help="CSV file to read the source row from")
+    parser.add_argument("row", type=parse_row_range, help="1-indexed row number (matching the CSV's data rows) to base variations on, e.g. '100'. Also accepts an inclusive range like '100-105' to process multiple rows in one run, each getting its own output CSV")
+    parser.add_argument("aspect", nargs="?", default=None, help="The aspect of the prompt to vary, e.g. 'dress color'. Multiple aspects can be given at once, joined with 'and' or a comma, e.g. 'hair color and dress color' - the model will vary all of them together across the requested count. Omit this and use --random-aspects instead to have aspects chosen randomly from the vocab file")
+    parser.add_argument("count", type=int, help="Number of variations to generate")
+    parser.add_argument("--output", default=None, help="Output CSV path (default: <csv name>_row<row>_variations.csv, in a 'Variations' folder next to the input CSV)")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model to use (default: {DEFAULT_MODEL})")
+    parser.add_argument("--vocab", default=str(DEFAULT_VOCAB_PATH), help=f"JSON file mapping aspect name -> list of allowed values (default: {DEFAULT_VOCAB_PATH.name} next to this script, if present)")
+    parser.add_argument("--random-aspects", type=int, default=None, metavar="N", help="Instead of specifying 'aspect', randomly choose N aspects from the vocab file (only aspects with a non-empty value list are eligible)")
+    args = parser.parse_args()
+
+    run_batch(
+        csv_path=Path(args.csv_path),
+        row_numbers=args.row,
+        aspect=args.aspect,
+        count=args.count,
+        output=args.output,
+        model=args.model,
+        vocab_path=args.vocab,
+        random_aspects=args.random_aspects,
+    )
 
 
 if __name__ == "__main__":

@@ -36,58 +36,39 @@ convention as extract_image_prompts.py) - if two source rows land in the same
 category with identical Positive Prompt text, only the first is kept. Rows
 with no Positive Prompt text are never deduped against each other. Duplicates
 are checked per-category, not globally, since the same prompt legitimately
-appearing in two different categories (e.g. futa vs. general) isn't a
-duplicate.
+appearing in two different categories (e.g. a category from
+category_keywords.local.json vs. general) isn't a duplicate.
 
 Usage:
     python sort_prompts_by_category.py
 """
 
 import csv
-import json
 import re
 from pathlib import Path
+
+try:
+    from local_config import load_named_list, load_list  # run directly: python sort_prompts_by_category.py
+except ImportError:
+    from comfy_prompt_tools.local_config import load_named_list, load_list  # imported as a package
 
 OUTPUT_DIR = Path(r"F:\Programs\ComfyFiles\output")
 
 CONFIG_PATH = Path(__file__).resolve().parent / "category_keywords.json"
-LOCAL_CONFIG_PATH = Path(__file__).resolve().parent / "category_keywords.local.json"
+COUNT_TAG_NOUNS_PATH = Path(__file__).resolve().parent / "count_tag_nouns.json"
 
 FALLBACK_CATEGORIES = ("general_solo", "general_group")
 
-
-def _merge_categories(base_categories, local_categories):
-    """Local entries override the base entry with the same "name" in place;
-    new names are appended - mirrors how Claude Code's settings.local.json
-    overrides settings.json."""
-    merged = list(base_categories)
-    index_by_name = {cat["name"]: i for i, cat in enumerate(merged)}
-    for local_cat in local_categories:
-        name = local_cat["name"]
-        if name in index_by_name:
-            merged[index_by_name[name]] = local_cat
-        else:
-            index_by_name[name] = len(merged)
-            merged.append(local_cat)
-    return merged
-
-
-def load_categories():
-    categories = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))["categories"]
-    if LOCAL_CONFIG_PATH.is_file():
-        local_categories = json.loads(LOCAL_CONFIG_PATH.read_text(encoding="utf-8"))["categories"]
-        categories = _merge_categories(categories, local_categories)
-    return categories
-
-
-CATEGORIES = load_categories()
+CATEGORIES = load_named_list(CONFIG_PATH, "categories", "name")
 CATEGORY_NAMES = [cat["name"] for cat in CATEGORIES] + list(FALLBACK_CATEGORIES)
 
 EXCLUDE = {"rerun_log.csv", "general.csv"} | {f"{name}.csv" for name in CATEGORY_NAMES}
 
-COUNT_TAG_RE = re.compile(
-    r"\b(\d+)\s*(girls?|boys?|others?|futas?|anthros?|furr(?:y|ies)|females?|males?|people|persons?)\b"
-)
+# Booru-style counting-tag nouns (e.g. the "girls" in "2girls") - like
+# CATEGORIES, extended by a gitignored count_tag_nouns.local.json next to
+# count_tag_nouns.json for personal additions.
+_COUNT_TAG_NOUNS = load_list(COUNT_TAG_NOUNS_PATH, "nouns")
+COUNT_TAG_RE = re.compile(r"\b(\d+)\s*(" + "|".join(_COUNT_TAG_NOUNS) + r")\b")
 SOLO_TAG_RE = re.compile(r"\bsolo\b")
 DUO_TAG_RE = re.compile(r"\bduo\b")
 TRIO_TAG_RE = re.compile(r"\btrio\b")

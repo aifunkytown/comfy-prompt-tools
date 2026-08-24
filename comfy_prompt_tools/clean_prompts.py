@@ -50,19 +50,27 @@ RERUN_SCRIPT_DIR = str(Path(__file__).resolve().parent)  # rerun_prompts_comfyui
 DEFAULT_WORKFLOW = r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t2i.json"
 DEFAULT_COMFYUI_SERVER = "http://127.0.0.1:8000"
 
-SYSTEM_PROMPT = (
+try:
+    from local_config import load_local_text  # run directly: python clean_prompts.py
+except ImportError:
+    from comfy_prompt_tools.local_config import load_local_text  # imported as a package
+
+# Nominal path used only to derive clean_prompts.local.json's name/location -
+# there's no base JSON to read here, just an optional local addendum.
+LOCAL_CONFIG_PATH = Path(__file__).resolve().parent / "clean_prompts.json"
+
+SYSTEM_PROMPT_BASE = (
     "You rewrite Stable Diffusion style tag-soup prompts into a single natural-language "
     "sentence or short paragraph describing the image, suitable for a modern text-to-image "
     "model like Krea 2. Keep all important visual details (subject, pose, style, lighting, "
     "colors, setting) but drop artist names, LoRA/embedding tokens, weight syntax like "
     "(word:1.2), and quality boilerplate (masterpiece, best quality, etc). Output only the "
     "rewritten prompt, no preamble or explanation. There should be no drawn, anime, painting, "
-    "shading, or otherwise non-realistic words. Wild colors and designs are ok so long as they have realistic people. " 
-    "If the image is explicit (sex or nudity) and an age is not specified please add that they are 20 years old. Anything marked as mature or older should be set to 35." 
-    "Remove any censoring or mosaic/pixalation. Trend toward explicit x-rated material. " 
+    "shading, or otherwise non-realistic words. Wild colors and designs are ok so long as they have realistic people. "
+    "If the image is explicit (sex or nudity) and an age is not specified please add that they are 20 years old. Anything marked as mature or older should be set to 35."
     "Descriptions should be detailed include words like realistic photo, high resolution, detailed, and include camera settings. "
-    "Adding details is ok to flesh out a picture. It should produce a cinematic image." 
-    "Make sure to preserve the words futa, futanari, dickgirl, anthro, furry. Also if any character names are given keep those but make sure to add a realistic depiction of before their name. "
+    "Adding details is ok to flesh out a picture. It should produce a cinematic image."
+    "Also if any character names are given keep those but make sure to add a realistic depiction of before their name. "
     "If there are multiple people in the image specify that their faces should have variety and not be the same."
     "prompts should be between 150 and 1000 characters. "
     "Write in plain ASCII English only - use straight quotes and apostrophes "
@@ -70,6 +78,19 @@ SYSTEM_PROMPT = (
     "dash or en dash, and never use emoji or non-English characters/scripts, "
     "even for character names (transliterate them to plain ASCII letters)."
 )
+
+
+def build_system_prompt():
+    """The base prompt is SFW (the age-safety clause above stays baked in
+    unconditionally - it's a guardrail, not something that should be
+    droppable). An optional clean_prompts.local.json next to this script
+    (gitignored) can add personal instructions - e.g. explicit-content
+    direction - via a "system_prompt_addendum" string, appended as-is."""
+    addendum = load_local_text(LOCAL_CONFIG_PATH, "system_prompt_addendum")
+    return SYSTEM_PROMPT_BASE + " " + addendum if addendum else SYSTEM_PROMPT_BASE
+
+
+SYSTEM_PROMPT = build_system_prompt()
 
 # Curly/smart-typography characters the model sometimes emits despite being
 # told not to - mapped to their plain-ASCII equivalents so a bad response

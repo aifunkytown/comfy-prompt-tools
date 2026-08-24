@@ -18,9 +18,13 @@ LoRA routing by prompt content
 A single workflow is used for every row (--workflow). Each row's prompt is
 checked (case-insensitive) for certain keywords and, when matched, the
 corresponding LoRA is turned on (via the workflow's rgthree "Power Lora
-Loader" node) at a preset strength - see LORA_RULES below. Multiple rules
-can match the same prompt at once, in which case every matching LoRA is
-turned on together. Nothing else about the workflow changes.
+Loader" node) at a preset strength - see lora_rules.json (next to this
+script) for the rule list, which ships empty in the public repo; a
+gitignored lora_rules.local.json next to it adds your own personal rules the
+same way category_keywords.local.json does for sort_prompts_by_category.py.
+Multiple rules can match the same prompt at once, in which case every
+matching LoRA is turned on together. Nothing else about the workflow
+changes.
 
 Getting the workflow template
 ------------------------------
@@ -71,6 +75,13 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+
+try:
+    from local_config import load_named_list  # run directly: python rerun_prompts_comfyui.py
+except ImportError:
+    from comfy_prompt_tools.local_config import load_named_list  # imported as a package
+
+LORA_RULES_PATH = Path(__file__).resolve().parent / "lora_rules.json"
 
 
 def find_prompt_node_ids(workflow):
@@ -231,13 +242,11 @@ def load_workflow_template(workflow_path, server):
     return template
 
 
-# Keyword -> LoRA mapping, kept together in one place so it's easy to find and
-# adjust. Every rule whose keyword(s) appear (case-insensitive) in a prompt gets
-# its LoRA turned on; multiple matching rules stack together on the same image.
-LORA_RULES = [
-    {"keywords": ("futa", "futanari", "dickgirl", "trans"), "lora": "futa.safetensors", "strength": 0.8},
-    {"keywords": ("furry",), "lora": "krea2_furry_0716.safetensors", "strength": 1.0},
-]
+# Keyword -> LoRA mapping - see lora_rules.json (+ your own
+# lora_rules.local.json) next to this script, not hardcoded here. Every rule
+# whose keyword(s) appear (case-insensitive) in a prompt gets its LoRA
+# turned on; multiple matching rules stack together on the same image.
+LORA_RULES = load_named_list(LORA_RULES_PATH, "rules", "lora")
 
 
 def select_loras(prompt_text):
