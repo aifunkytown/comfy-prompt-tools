@@ -332,6 +332,120 @@ def extract_prompt_text(row, cleaned_col):
     return positive_text, negative_text, notes
 
 
+def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_row=None, end_row=None, random_seed=False, delay=0.2, log_path=None):
+    """Core logic shared by the CLI (main()) and run(config_path) below.
+    csv_paths is an explicit list of Path objects (a directory should already
+    be expanded via discover_csv_files by the caller) - start_row/end_row
+    only apply when there's exactly one path (ambiguous otherwise), same as
+    the CLI's own restriction."""
+    if (start_row is not None or end_row is not None) and len(csv_paths) != 1:
+        print("Error: start_row/end_row require exactly one CSV file, not several (ambiguous across multiple CSVs)", file=sys.stderr)
+        sys.exit(1)
+    if not csv_paths:
+        print("Error: no CSV file(s) given", file=sys.stderr)
+        sys.exit(1)
+
+    # Phase 1: read every row from every CSV up front (no network activity yet).
+    entries = []  # (csv_path, row_num, end_row_num, name, positive_text, negative_text, notes)
+    for csv_path in csv_paths:
+        cleaned_col, numbered_rows = load_csv_rows(csv_path, start_row, end_row)
+        if cleaned_col:
+            print(f"[{csv_path.name}] Using '{cleaned_col}' column in place of 'Positive Prompt' where present")
+        if not numbered_rows:
+            continue
+        end_row_num = numbered_rows[-1][0]
+        for row_num, row in numbered_rows:
+            name = row.get("File Name", f"row{row_num}")
+            positive_text, negative_text, notes = extract_prompt_text(row, cleaned_col)
+            entries.append((csv_path, row_num, end_row_num, name, positive_text, negative_text, notes))
+
+    # Phase 2: load/convert the workflow once, before queuing a single prompt. Once
+    # prompts start landing in ComfyUI's queue, driving the browser to convert a
+    # saved workflow is no longer safe to interleave with that.
+    template, positive_id, negative_id, save_ids, lora_node_id = load_workflow_bundle(workflow_path, server)
+
+    # Phase 3: queue everything. Purely stdlib HTTP calls from here on - no browser.
+    log_path = Path(log_path) if log_path else csv_paths[0].parent / "rerun_log.csv"
+    client_id = str(uuid.uuid4())
+
+    print(f"\nQueuing {len(entries)} row(s) total...")
+    with open(log_path, "w", newline="", encoding="utf-8") as log_file:
+        log_writer = csv.writer(log_file)
+        log_writer.writerow(["CSV File", "File Name", "Status", "Prompt ID", "LoRAs", "Detail"])
+
+        for csv_path, i, end_row_num, name, positive_text, negative_text, notes in entries:
+            label = f"[{csv_path.name} {i}/{end_row_num}]"
+
+            if notes or not positive_text:
+                print(f"{label} Skipping {name}: {notes or 'no positive prompt text'}")
+                log_writer.writerow([csv_path.name, name, "skipped", "", "", notes or "no positive prompt text"])
+                continue
+
+            lora_matches = select_loras(positive_text)
+            lora_summary = ", ".join(f"{lora}@{strength}" for lora, strength in lora_matches) or "none"
+
+            now = datetime.datetime.now()
+            prefix = f"rerun/{now:%Y-%m-%d}/{now:%H%M%S_%f}_{Path(name).stem}"
+            wf = build_workflow_for_row(
+                template, positive_id, negative_id, save_ids,
+                positive_text, negative_text, prefix, random_seed,
+                lora_node_id, lora_matches,
+            )
+
+            try:
+                result = queue_prompt(server, wf, client_id)
+            except urllib.error.URLError as e:
+                print(f"{label} Failed to queue {name}: {e}", file=sys.stderr)
+                log_writer.writerow([csv_path.name, name, "error", "", lora_summary, f"Failed to queue: {e}"])
+                continue
+
+            node_errors = result.get("node_errors")
+            prompt_id = result.get("prompt_id")
+            if node_errors:
+                print(f"{label} {name}: node errors: {node_errors}")
+                log_writer.writerow([csv_path.name, name, "error", prompt_id or "", lora_summary, json.dumps(node_errors)])
+                continue
+
+            print(f"{label} Queued {name} as prompt_id={prompt_id} (LoRAs: {lora_summary})")
+            log_writer.writerow([csv_path.name, name, "queued", prompt_id, lora_summary, ""])
+
+            log_file.flush()
+            time.sleep(delay)
+
+    print(f"\nAll prompts queued. Log written to: {log_path}")
+    print("ComfyUI will process the queue in the background - check its window or output folder for results.")
+
+
+def run(config_path):
+    """JSON-config-driven entry point, same convention as
+    run_test.run()/lora_test.run()/generate_prompt_variations.run() - a
+    caller like the GUI can drive this with an explicit list of CSV paths
+    (e.g. exactly the files a Variations-tab run just produced) without
+    going through argparse or directory-discovery. Config file format:
+        {
+            "csv_paths": ["...", "..."],
+            "workflow": "...",
+            "server": "http://127.0.0.1:8000",   // optional
+            "start_row": 3,                       // optional, single-path only
+            "end_row": 7,                         // optional, single-path only
+            "random_seed": false,                 // optional
+            "delay": 0.2,                          // optional
+            "log": "..."                           // optional
+        }
+    """
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    run_batch(
+        csv_paths=[Path(p) for p in config["csv_paths"]],
+        workflow_path=Path(config["workflow"]).expanduser().resolve(),
+        server=config.get("server", "http://127.0.0.1:8000"),
+        start_row=config.get("start_row"),
+        end_row=config.get("end_row"),
+        random_seed=config.get("random_seed", False),
+        delay=config.get("delay", 0.2),
+        log_path=config.get("log"),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -365,86 +479,25 @@ def main():
         if not csv_paths:
             print(f"Error: no *.csv files found in {input_path}", file=sys.stderr)
             sys.exit(1)
-        default_log_dir = input_path
         print(f"{input_path} is a directory - found {len(csv_paths)} CSV file(s):")
         for p in csv_paths:
             print(f"  {p.name}")
     elif input_path.is_file():
         csv_paths = [input_path]
-        default_log_dir = input_path.parent
     else:
         print(f"Error: CSV file or directory not found: {input_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Phase 1: read every row from every CSV up front (no network activity yet).
-    entries = []  # (csv_path, row_num, end_row_num, name, positive_text, negative_text, notes)
-    for csv_path in csv_paths:
-        cleaned_col, numbered_rows = load_csv_rows(csv_path, args.start_row, args.end_row)
-        if cleaned_col:
-            print(f"[{csv_path.name}] Using '{cleaned_col}' column in place of 'Positive Prompt' where present")
-        if not numbered_rows:
-            continue
-        end_row_num = numbered_rows[-1][0]
-        for row_num, row in numbered_rows:
-            name = row.get("File Name", f"row{row_num}")
-            positive_text, negative_text, notes = extract_prompt_text(row, cleaned_col)
-            entries.append((csv_path, row_num, end_row_num, name, positive_text, negative_text, notes))
-
-    # Phase 2: load/convert the workflow once, before queuing a single prompt. Once
-    # prompts start landing in ComfyUI's queue, driving the browser to convert a
-    # saved workflow is no longer safe to interleave with that.
-    template, positive_id, negative_id, save_ids, lora_node_id = load_workflow_bundle(workflow_path, args.server)
-
-    # Phase 3: queue everything. Purely stdlib HTTP calls from here on - no browser.
-    log_path = Path(args.log) if args.log else default_log_dir / "rerun_log.csv"
-    client_id = str(uuid.uuid4())
-
-    print(f"\nQueuing {len(entries)} row(s) total...")
-    with open(log_path, "w", newline="", encoding="utf-8") as log_file:
-        log_writer = csv.writer(log_file)
-        log_writer.writerow(["CSV File", "File Name", "Status", "Prompt ID", "LoRAs", "Detail"])
-
-        for csv_path, i, end_row_num, name, positive_text, negative_text, notes in entries:
-            label = f"[{csv_path.name} {i}/{end_row_num}]"
-
-            if notes or not positive_text:
-                print(f"{label} Skipping {name}: {notes or 'no positive prompt text'}")
-                log_writer.writerow([csv_path.name, name, "skipped", "", "", notes or "no positive prompt text"])
-                continue
-
-            lora_matches = select_loras(positive_text)
-            lora_summary = ", ".join(f"{lora}@{strength}" for lora, strength in lora_matches) or "none"
-
-            now = datetime.datetime.now()
-            prefix = f"rerun/{now:%Y-%m-%d}/{now:%H%M%S_%f}_{Path(name).stem}"
-            wf = build_workflow_for_row(
-                template, positive_id, negative_id, save_ids,
-                positive_text, negative_text, prefix, args.random_seed,
-                lora_node_id, lora_matches,
-            )
-
-            try:
-                result = queue_prompt(args.server, wf, client_id)
-            except urllib.error.URLError as e:
-                print(f"{label} Failed to queue {name}: {e}", file=sys.stderr)
-                log_writer.writerow([csv_path.name, name, "error", "", lora_summary, f"Failed to queue: {e}"])
-                continue
-
-            node_errors = result.get("node_errors")
-            prompt_id = result.get("prompt_id")
-            if node_errors:
-                print(f"{label} {name}: node errors: {node_errors}")
-                log_writer.writerow([csv_path.name, name, "error", prompt_id or "", lora_summary, json.dumps(node_errors)])
-                continue
-
-            print(f"{label} Queued {name} as prompt_id={prompt_id} (LoRAs: {lora_summary})")
-            log_writer.writerow([csv_path.name, name, "queued", prompt_id, lora_summary, ""])
-
-            log_file.flush()
-            time.sleep(args.delay)
-
-    print(f"\nAll prompts queued. Log written to: {log_path}")
-    print("ComfyUI will process the queue in the background - check its window or output folder for results.")
+    run_batch(
+        csv_paths=csv_paths,
+        workflow_path=workflow_path,
+        server=args.server,
+        start_row=args.start_row,
+        end_row=args.end_row,
+        random_seed=args.random_seed,
+        delay=args.delay,
+        log_path=args.log,
+    )
 
 
 if __name__ == "__main__":

@@ -73,6 +73,11 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   gitignored `lora_rules.local.json` for your own rules) via the workflow's
   rgthree "Power Lora Loader" node. Accepts either a saved ComfyUI workflow
   (converted automatically via a headless browser) or an API-format export.
+  Also exposes a `run(config_path)` entry point (same JSON-config
+  convention as `run_test.py`/`lora_test.py`/`generate_prompt_variations.py`)
+  taking an explicit list of CSV paths rather than a single file-or-directory
+  argument - used by `funkytown-testing-harness-gui`'s Variations tab to
+  queue exactly the file(s) a just-finished run produced.
 
 ### CSV housekeeping
 
