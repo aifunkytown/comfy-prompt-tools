@@ -12,6 +12,17 @@ python "comfy_prompt_tools\extract_image_prompts.py" "F:\Programs\ComfyFiles\out
 python "comfy_prompt_tools\extract_image_prompts.py" "F:\Programs\ComfyFiles\output\SavedFromProfile"
 ```
 
+## Extract + clean in one step
+
+```bash
+python "comfy_prompt_tools\extract_and_clean.py" "F:\Programs\ComfyFiles\output\2026-07-22"
+python "comfy_prompt_tools\extract_and_clean.py" "F:\Programs\ComfyFiles\output\SavedFromProfile" --overwrite
+```
+
+(Errors out immediately if Ollama isn't reachable, before extracting
+anything - same `--overwrite`/`-v`/`--submit-to-comfyui`/etc. options as
+`clean_prompts.py` alone are accepted and passed through.)
+
 ## Rerun through ComfyUI
 
 ```bash

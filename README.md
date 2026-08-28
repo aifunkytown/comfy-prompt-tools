@@ -53,6 +53,15 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   own system prompt is likewise split base/local - `clean_prompts.local.json`
   next to it can append personal instructions.
 
+- **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
+  `clean_prompts.py` in one command instead of two, on whatever CSV(s) the
+  extraction step just wrote. Checks Ollama is actually reachable *before*
+  extracting anything (errors out immediately if not, rather than
+  extracting for nothing when cleaning would fail row-by-row anyway). Every
+  `clean_prompts.py` option (`--overwrite`, `-v`/`--verbose`,
+  `--submit-to-comfyui`, `--workflow`, `--server`, `--random-seed`) is
+  accepted and passed straight through.
+
 - **`generate_prompt_variations.py`** - Takes one row of a prompt CSV and asks
   Ollama to generate variations that change a specific described aspect (e.g.
   "dress color") while leaving the rest of the prompt alone. Supports a

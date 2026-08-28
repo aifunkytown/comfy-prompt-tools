@@ -122,6 +122,19 @@ def sanitize_ascii(text: str) -> str:
     return text.strip()
 
 
+def check_ollama_running(timeout=5):
+    """True if Ollama's HTTP API is reachable - checked via /api/tags rather
+    than /api/generate, since listing local models doesn't require an
+    actual (slower, model-dependent) inference request just to prove the
+    server is up."""
+    base = OLLAMA_URL.rsplit("/api/", 1)[0]
+    try:
+        with urllib.request.urlopen(f"{base}/api/tags", timeout=timeout):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def clean_prompt(positive_prompt: str) -> str:
     payload = {
         "model": MODEL,
@@ -241,6 +254,30 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         print("Nothing to do - every row already has a Cleaned Prompt (use --overwrite to redo them).")
 
 
+def clean_all(csv_paths, submit_to_comfyui=False, workflow=DEFAULT_WORKFLOW, server=DEFAULT_COMFYUI_SERVER,
+              random_seed=False, overwrite=False, verbose=False):
+    """Core logic behind main() - process an explicit list of CSV paths
+    without going through argparse. Callable directly by other scripts
+    (e.g. extract_and_clean.py)."""
+    args = argparse.Namespace(
+        submit_to_comfyui=submit_to_comfyui, workflow=workflow, server=server,
+        random_seed=random_seed, overwrite=overwrite, verbose=verbose,
+    )
+
+    rerun = workflow_bundle = client_id = None
+    if submit_to_comfyui:
+        sys.path.insert(0, RERUN_SCRIPT_DIR)
+        import rerun_prompts_comfyui as rerun
+
+        workflow_path = Path(workflow).expanduser().resolve()
+        workflow_bundle = rerun.load_workflow_bundle(workflow_path, server)
+        client_id = str(uuid.uuid4())
+
+    for csv_path in csv_paths:
+        print(f"=== {csv_path} ===")
+        process_csv(csv_path, args, rerun, workflow_bundle, client_id)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("csv_path", nargs="?", default=None,
@@ -268,18 +305,11 @@ def main():
             print("No CSV files found in the current directory.", file=sys.stderr)
             sys.exit(1)
 
-    rerun = workflow_bundle = client_id = None
-    if args.submit_to_comfyui:
-        sys.path.insert(0, RERUN_SCRIPT_DIR)
-        import rerun_prompts_comfyui as rerun
-
-        workflow_path = Path(args.workflow).expanduser().resolve()
-        workflow_bundle = rerun.load_workflow_bundle(workflow_path, args.server)
-        client_id = str(uuid.uuid4())
-
-    for csv_path in csv_paths:
-        print(f"=== {csv_path} ===")
-        process_csv(csv_path, args, rerun, workflow_bundle, client_id)
+    clean_all(
+        csv_paths,
+        submit_to_comfyui=args.submit_to_comfyui, workflow=args.workflow, server=args.server,
+        random_seed=args.random_seed, overwrite=args.overwrite, verbose=args.verbose,
+    )
 
 
 if __name__ == "__main__":

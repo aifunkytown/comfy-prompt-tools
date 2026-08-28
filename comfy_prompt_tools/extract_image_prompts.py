@@ -371,6 +371,49 @@ def write_folder_csv(folder, image_paths, output_dir=None):
     )
 
 
+def extract_all(directory, output_dir=None):
+    """Core logic behind main() - scan directory recursively for images,
+    write/append one CSV per folder that directly contains any, and return
+    the list of output CSV Paths touched (empty if no images were found).
+    Callable directly by other scripts (e.g. extract_and_clean.py) without
+    going through argparse."""
+    root = Path(directory)
+    if not root.is_dir():
+        print(f"Error: directory not found: {root}", file=sys.stderr)
+        sys.exit(1)
+
+    if output_dir:
+        output_dir = Path(output_dir).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    image_paths = sorted(
+        p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+    )
+
+    if not image_paths:
+        print(f"No images found under {root}")
+        return []
+
+    by_folder = {}
+    for image_path in image_paths:
+        by_folder.setdefault(image_path.parent, []).append(image_path)
+
+    seen_names = {}
+    output_paths = []
+    for folder in sorted(by_folder):
+        if folder.name in seen_names:
+            print(
+                f"Warning: folder name '{folder.name}' seen at both {seen_names[folder.name]} and {folder} - "
+                f"the second one will overwrite {folder.name}-prompts.csv",
+                file=sys.stderr,
+            )
+        seen_names[folder.name] = folder
+        write_folder_csv(folder, by_folder[folder], output_dir)
+        output_paths.append((output_dir or folder) / f"{folder.name}-prompts.csv")
+
+    return output_paths
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -386,38 +429,7 @@ def main():
     )
     args = parser.parse_args()
 
-    root = Path(args.directory)
-    if not root.is_dir():
-        print(f"Error: directory not found: {root}", file=sys.stderr)
-        sys.exit(1)
-
-    output_dir = None
-    if args.output_dir:
-        output_dir = Path(args.output_dir).expanduser().resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-    image_paths = sorted(
-        p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-    )
-
-    if not image_paths:
-        print(f"No images found under {root}")
-        return
-
-    by_folder = {}
-    for image_path in image_paths:
-        by_folder.setdefault(image_path.parent, []).append(image_path)
-
-    seen_names = {}
-    for folder in sorted(by_folder):
-        if folder.name in seen_names:
-            print(
-                f"Warning: folder name '{folder.name}' seen at both {seen_names[folder.name]} and {folder} - "
-                f"the second one will overwrite {folder.name}-prompts.csv",
-                file=sys.stderr,
-            )
-        seen_names[folder.name] = folder
-        write_folder_csv(folder, by_folder[folder], output_dir)
+    extract_all(args.directory, args.output_dir)
 
 
 if __name__ == "__main__":
