@@ -478,14 +478,20 @@ def _extract_variations_list(response_text):
     return variations
 
 
-def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DEFAULT_MODEL, vocab_path=None, random_aspects=None):
+def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DEFAULT_MODEL, vocab_path=None, random_aspects=None, prompt_overrides=None):
     """Core logic shared by the CLI (main()) and anything else driving this
     programmatically (e.g. the GUI's Variations tab, via run() below).
-    csv_path is a Path, row_numbers a list of 1-indexed ints (see
-    parse_row_range), aspect/random_aspects mutually exclusive same as the
-    CLI. Raises SystemExit on unrecoverable errors, same convention as
-    run_test.py/lora_test.py."""
+    csv_path is a Path, row_numbers a list of 1-indexed ints - not required
+    to be contiguous, so a caller can skip rows the user removed from a
+    preview list (see parse_row_range for the CLI's contiguous-range
+    parsing). aspect/random_aspects mutually exclusive same as the CLI.
+    prompt_overrides is an optional {row_num: text} map - when a row_num is
+    present, its text replaces that row's own Positive/Cleaned Prompt as the
+    original prompt to vary, while every other column (File Name, Negative
+    Prompt, etc.) still comes from the CSV row as usual. Raises SystemExit
+    on unrecoverable errors, same convention as run_test.py/lora_test.py."""
     vocab_path = vocab_path or DEFAULT_VOCAB_PATH
+    prompt_overrides = prompt_overrides or {}
     vocab, random_exclude, multi_select, explicit_aspects = load_vocab(vocab_path)
 
     if random_aspects is not None and aspect:
@@ -554,7 +560,7 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
         try:
             source_row = rows[row_num - 1]
             cleaned_text = (source_row.get(cleaned_col) or "").strip() if cleaned_col else ""
-            original_prompt = cleaned_text or (source_row.get("Positive Prompt") or "").strip()
+            original_prompt = prompt_overrides.get(row_num) or cleaned_text or (source_row.get("Positive Prompt") or "").strip()
             if not original_prompt:
                 print(f"Error: row {row_num} has no Positive Prompt (or Cleaned Prompt) text - skipping", file=sys.stderr)
                 failed += 1
@@ -666,25 +672,33 @@ def run(config_path):
     without going through argparse). Config file format:
         {
             "csv_path": "...",
-            "row": "100" or "100-105",
+            "row": "100" or "100-105",                  // or "rows" instead
+            "rows": [100, 102, 105],                     // explicit, not required to be contiguous
             "aspect": "hair color and dress color",   // or "random_aspects" instead
             "random_aspects": 3,
             "count": 10,
             "model": "gemma4:12b",                      // optional
             "vocab_path": "...",                        // optional
-            "output": "..."                             // optional, single-row only
+            "output": "...",                            // optional, single-row only
+            "prompt_overrides": {"100": "a new prompt for row 100"}  // optional
         }
+    "rows" takes precedence over "row" if both are present.
     """
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    if "rows" in config:
+        row_numbers = [int(r) for r in config["rows"]]
+    else:
+        row_numbers = parse_row_range(str(config["row"]))
     run_batch(
         csv_path=Path(config["csv_path"]),
-        row_numbers=parse_row_range(str(config["row"])),
+        row_numbers=row_numbers,
         aspect=config.get("aspect"),
         count=config["count"],
         output=config.get("output"),
         model=config.get("model", DEFAULT_MODEL),
         vocab_path=config.get("vocab_path") or DEFAULT_VOCAB_PATH,
         random_aspects=config.get("random_aspects"),
+        prompt_overrides={int(k): v for k, v in config.get("prompt_overrides", {}).items()},
     )
 
 
