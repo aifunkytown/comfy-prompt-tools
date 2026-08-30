@@ -371,14 +371,14 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
     print(f"\nQueuing {len(entries)} row(s) total...")
     with open(log_path, "w", newline="", encoding="utf-8") as log_file:
         log_writer = csv.writer(log_file)
-        log_writer.writerow(["CSV File", "File Name", "Status", "Prompt ID", "LoRAs", "Detail"])
+        log_writer.writerow(["CSV File", "File Name", "Status", "Prompt ID", "LoRAs", "Filename Prefix", "Detail"])
 
         for csv_path, i, end_row_num, name, positive_text, negative_text, notes in entries:
             label = f"[{csv_path.name} {i}/{end_row_num}]"
 
             if notes or not positive_text:
                 print(f"{label} Skipping {name}: {notes or 'no positive prompt text'}")
-                log_writer.writerow([csv_path.name, name, "skipped", "", "", notes or "no positive prompt text"])
+                log_writer.writerow([csv_path.name, name, "skipped", "", "", "", notes or "no positive prompt text"])
                 continue
 
             lora_matches = select_loras(positive_text)
@@ -396,18 +396,18 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
                 result = queue_prompt(server, wf, client_id)
             except urllib.error.URLError as e:
                 print(f"{label} Failed to queue {name}: {e}", file=sys.stderr)
-                log_writer.writerow([csv_path.name, name, "error", "", lora_summary, f"Failed to queue: {e}"])
+                log_writer.writerow([csv_path.name, name, "error", "", lora_summary, prefix, f"Failed to queue: {e}"])
                 continue
 
             node_errors = result.get("node_errors")
             prompt_id = result.get("prompt_id")
             if node_errors:
                 print(f"{label} {name}: node errors: {node_errors}")
-                log_writer.writerow([csv_path.name, name, "error", prompt_id or "", lora_summary, json.dumps(node_errors)])
+                log_writer.writerow([csv_path.name, name, "error", prompt_id or "", lora_summary, prefix, json.dumps(node_errors)])
                 continue
 
             print(f"{label} Queued {name} as prompt_id={prompt_id} (LoRAs: {lora_summary})")
-            log_writer.writerow([csv_path.name, name, "queued", prompt_id, lora_summary, ""])
+            log_writer.writerow([csv_path.name, name, "queued", prompt_id, lora_summary, prefix, ""])
 
             log_file.flush()
             time.sleep(delay)
