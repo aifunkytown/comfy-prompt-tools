@@ -1,7 +1,7 @@
 {
     "_exclude_from_random": ["furry species", "number of subjects", "camera aperture"],
     "_multi_select": {"accessories": 5},
-    "_explicit_aspects": ["nudity", "penis size", "nipple size", "nipple shape"],
+    "_explicit_aspects": ["nudity", "penis size", "nipple size", "nipple shape", "underwear type"],
     "breast size": ["flat", "small", "medium", "large", "huge", "giant", "enormous"],
     "hair color": ["blonde", "platinum blonde", "brunette", "black", "auburn", "red", "copper", "chestnut", "strawberry blonde", "silver", "gray", "pastel pink", "blue", "purple", "ombre", "turquoise", "white"],
     "detail level": ["minimal detail", "light detail", "moderate detail", "highly detailed", "hyper-detailed", "ultra-detailed, 8k photorealistic"],
