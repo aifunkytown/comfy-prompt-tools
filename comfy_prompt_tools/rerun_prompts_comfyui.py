@@ -26,6 +26,17 @@ Multiple rules can match the same prompt at once, in which case every
 matching LoRA is turned on together. Nothing else about the workflow
 changes.
 
+Resolution from generate_prompt_variations.py's "resolution" aspect
+------------------------------------------------------------------
+If a CSV row has a non-empty "Resolution" column (written by
+generate_prompt_variations.py when its special "resolution" aspect was
+used - see that script's own docstring), its "WIDTHxHEIGHT" value is
+applied to the workflow's Empty Latent Image node (or a same-shaped
+variant, e.g. EmptySD3LatentImage) before queuing that row - everything
+else about the workflow (batch_size included) is left as-is. A row with no
+Resolution value (column absent, or blank on an unvaried "original" row)
+leaves the workflow's own size alone.
+
 Getting the workflow template
 ------------------------------
 --workflow can point at either:
@@ -124,6 +135,22 @@ def find_power_lora_loader_id(workflow):
     return None
 
 
+def find_empty_latent_image_node(workflow):
+    """Find the Empty Latent Image node (or a same-shaped variant, e.g.
+    EmptySD3LatentImage) - class_type name first, falling back to structure
+    (integer width/height/batch_size inputs) since the exact class name
+    varies by model family/custom node pack, same approach as
+    find_power_lora_loader_id."""
+    for node_id, node in workflow.items():
+        if "EmptyLatentImage" in node.get("class_type", ""):
+            return node_id
+    for node_id, node in workflow.items():
+        inputs = node.get("inputs", {})
+        if all(isinstance(inputs.get(k), (int, float)) for k in ("width", "height", "batch_size")):
+            return node_id
+    return None
+
+
 def find_seed_inputs(workflow):
     """Return list of (node_id, input_key) for widget inputs that look like a seed."""
     seed_inputs = []
@@ -153,7 +180,18 @@ def apply_loras(wf, lora_node_id, lora_matches):
             print(f"  warning: LoRA slot for '{lora_filename}' not found in workflow", file=sys.stderr)
 
 
-def build_workflow_for_row(template, positive_id, negative_id, save_ids, positive_text, negative_text, prefix, randomize_seed, lora_node_id=None, lora_matches=None):
+def set_resolution(wf, latent_node_id, width, height):
+    """Set the Empty Latent Image node's width/height, leaving batch_size
+    and everything else about the workflow untouched."""
+    if not latent_node_id:
+        print("  warning: Resolution given but no Empty Latent Image node found in workflow", file=sys.stderr)
+        return
+    inputs = wf[latent_node_id]["inputs"]
+    inputs["width"] = width
+    inputs["height"] = height
+
+
+def build_workflow_for_row(template, positive_id, negative_id, save_ids, positive_text, negative_text, prefix, randomize_seed, lora_node_id=None, lora_matches=None, latent_node_id=None, resolution=None):
     wf = copy.deepcopy(template)
 
     if positive_id and positive_text:
@@ -169,6 +207,13 @@ def build_workflow_for_row(template, positive_id, negative_id, save_ids, positiv
             wf[node_id]["inputs"][key] = random.randint(0, 2**32 - 1)
 
     apply_loras(wf, lora_node_id, lora_matches)
+
+    if resolution:
+        try:
+            width_str, height_str = resolution.lower().split("x")
+            set_resolution(wf, latent_node_id, int(width_str), int(height_str))
+        except ValueError:
+            print(f"  warning: invalid Resolution value '{resolution}' - expected WIDTHxHEIGHT, e.g. '1920x1080'", file=sys.stderr)
 
     return wf
 
@@ -261,8 +306,9 @@ def select_loras(prompt_text):
 
 
 def load_workflow_bundle(workflow_path, server):
-    """Load a workflow file (converting it if needed) and return its template plus
-    positive/negative/SaveImage/Power-Lora-Loader node ids."""
+    """Load a workflow file (converting it if needed) and return its template
+    plus positive/negative/SaveImage/Power-Lora-Loader/Empty-Latent-Image
+    node ids."""
     if not workflow_path.is_file():
         print(f"Error: workflow file not found: {workflow_path}", file=sys.stderr)
         sys.exit(1)
@@ -274,12 +320,14 @@ def load_workflow_bundle(workflow_path, server):
         sys.exit(1)
     save_ids = find_save_image_node_ids(template)
     lora_node_id = find_power_lora_loader_id(template)
+    latent_node_id = find_empty_latent_image_node(template)
 
     print(f"[{workflow_path.name}] positive node: {positive_id}   negative node: {negative_id or '(none found)'}")
     print(f"[{workflow_path.name}] SaveImage node(s): {save_ids or '(none found - filename_prefix will not be set)'}")
     print(f"[{workflow_path.name}] Power Lora Loader node: {lora_node_id or '(none found - keyword LoRAs will not be applied)'}")
+    print(f"[{workflow_path.name}] Empty Latent Image node: {latent_node_id or '(none found - Resolution column values will not be applied)'}")
 
-    return template, positive_id, negative_id, save_ids, lora_node_id
+    return template, positive_id, negative_id, save_ids, lora_node_id, latent_node_id
 
 
 def queue_prompt(server, workflow, client_id):
@@ -324,12 +372,16 @@ def load_csv_rows(csv_path, start_row, end_row):
 
 
 def extract_prompt_text(row, cleaned_col):
-    """Return (positive_text, negative_text, notes) for a CSV row."""
+    """Return (positive_text, negative_text, notes, resolution) for a CSV
+    row - resolution is generate_prompt_variations.py's optional
+    "Resolution" column ("WIDTHxHEIGHT", or "" if that aspect wasn't used/
+    this is an unvaried "original" row)."""
     cleaned_text = (row.get(cleaned_col) or "").strip() if cleaned_col else ""
     positive_text = cleaned_text or (row.get("Positive Prompt") or "").strip()
     negative_text = (row.get("Negative Prompt") or "").strip()
     notes = (row.get("Notes") or "").strip()
-    return positive_text, negative_text, notes
+    resolution = (row.get("Resolution") or "").strip()
+    return positive_text, negative_text, notes, resolution
 
 
 def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_row=None, end_row=None, random_seed=False, delay=0.2, log_path=None):
@@ -346,7 +398,7 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
         sys.exit(1)
 
     # Phase 1: read every row from every CSV up front (no network activity yet).
-    entries = []  # (csv_path, row_num, end_row_num, name, positive_text, negative_text, notes)
+    entries = []  # (csv_path, row_num, end_row_num, name, positive_text, negative_text, notes, resolution)
     for csv_path in csv_paths:
         cleaned_col, numbered_rows = load_csv_rows(csv_path, start_row, end_row)
         if cleaned_col:
@@ -356,13 +408,13 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
         end_row_num = numbered_rows[-1][0]
         for row_num, row in numbered_rows:
             name = row.get("File Name", f"row{row_num}")
-            positive_text, negative_text, notes = extract_prompt_text(row, cleaned_col)
-            entries.append((csv_path, row_num, end_row_num, name, positive_text, negative_text, notes))
+            positive_text, negative_text, notes, resolution = extract_prompt_text(row, cleaned_col)
+            entries.append((csv_path, row_num, end_row_num, name, positive_text, negative_text, notes, resolution))
 
     # Phase 2: load/convert the workflow once, before queuing a single prompt. Once
     # prompts start landing in ComfyUI's queue, driving the browser to convert a
     # saved workflow is no longer safe to interleave with that.
-    template, positive_id, negative_id, save_ids, lora_node_id = load_workflow_bundle(workflow_path, server)
+    template, positive_id, negative_id, save_ids, lora_node_id, latent_node_id = load_workflow_bundle(workflow_path, server)
 
     # Phase 3: queue everything. Purely stdlib HTTP calls from here on - no browser.
     log_path = Path(log_path) if log_path else csv_paths[0].parent / "rerun_log.csv"
@@ -373,7 +425,7 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
         log_writer = csv.writer(log_file)
         log_writer.writerow(["CSV File", "File Name", "Status", "Prompt ID", "LoRAs", "Filename Prefix", "Detail"])
 
-        for csv_path, i, end_row_num, name, positive_text, negative_text, notes in entries:
+        for csv_path, i, end_row_num, name, positive_text, negative_text, notes, resolution in entries:
             label = f"[{csv_path.name} {i}/{end_row_num}]"
 
             if notes or not positive_text:
@@ -389,7 +441,7 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
             wf = build_workflow_for_row(
                 template, positive_id, negative_id, save_ids,
                 positive_text, negative_text, prefix, random_seed,
-                lora_node_id, lora_matches,
+                lora_node_id, lora_matches, latent_node_id, resolution,
             )
 
             try:

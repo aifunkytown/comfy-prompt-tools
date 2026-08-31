@@ -1,5 +1,5 @@
 {
-    "_exclude_from_random": ["furry species", "number of subjects", "camera aperture"],
+    "_exclude_from_random": ["furry species", "number of subjects", "camera aperture", "resolution"],
     "_multi_select": {"accessories": 5},
     "_explicit_aspects": ["nudity", "penis size", "nipple size", "nipple shape", "underwear type"],
     "breast size": ["flat", "small", "medium", "large", "huge", "giant", "enormous"],
@@ -32,5 +32,6 @@
     "accessories": ["glasses", "sunglasses", "earrings", "septum piercing", "nose ring", "nose stud", "eyebrow piercing", "lip piercing", "belly button piercing", "choker necklace", "layered necklaces", "bracelet/bangles", "anklet", "rings", "watch", "visible tattoos", "tiara", "crown", "flower crown", "headband", "hair clips", "hair bow", "veil", "bandana", "beanie", "wide-brim hat", "gloves", "elbow-length gloves", "fingerless gloves", "scarf", "sash", "belt", "cufflinks", "brooch/pin", "body chain", "arm cuffs", "masquerade mask", "monocle", "eyepatch", "none"],
     "pose": ["standing", "sitting", "kneeling", "lying down", "cowboy shot", "crouching", "walking", "leaning against a wall", "looking over shoulder"],
     "furry species": ["fox", "cat", "rabbit", "wolf", "tiger", "dragon", "deer", "horse", "dog", "goat", "lizard", "mouse", "leopard", "zebra", "cheetah", "duck", "panther", "bat", "snake/lamia", "raccoon", "pig", "donkey", "penguin", "bear", "shark"],
-    "skin color": ["pale", "fair", "light tan", "tan", "olive", "bronze", "golden", "brown", "dark brown", "ebony", "porcelain white", "ashen gray", "red", "crimson", "blue", "sapphire blue", "green", "emerald green", "purple", "lavender", "pink", "orange", "teal", "silver", "gold", "charcoal black", "translucent/ghostly pale"]
+    "skin color": ["pale", "fair", "light tan", "tan", "olive", "bronze", "golden", "brown", "dark brown", "ebony", "porcelain white", "ashen gray", "red", "crimson", "blue", "sapphire blue", "green", "emerald green", "purple", "lavender", "pink", "orange", "teal", "silver", "gold", "charcoal black", "translucent/ghostly pale"],
+    "resolution": ["1920x1080", "1080x1920", "2560x1440", "1440x2560", "3840x2160", "2160x3840", "1280x720", "720x1280", "1024x1024"]
 }

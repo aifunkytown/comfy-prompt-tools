@@ -64,6 +64,24 @@ Usage:
     # otherwise (age unstated, or 18 or under) they're excluded from random
     # selection for that row, the same way --random-aspects excludes
     # anything listed in "_exclude_from_random".
+
+    # "resolution" is a special, structural aspect (see STRUCTURAL_ASPECTS) -
+    # rather than describing something to weave into the prompt TEXT, each
+    # variation just gets assigned one of the vocab's resolution values
+    # directly (same even-coverage cycling as any other single-select vocab
+    # aspect), written to a "Resolution" column in the output CSV instead of
+    # ever being shown to the model. Requires a non-empty "resolution" list
+    # in the vocab file, and is always excluded from --random-aspects (add
+    # it to "_exclude_from_random" - already done in the default vocab file)
+    # since it's not a narrative/visual choice. rerun_prompts_comfyui.py
+    # reads that column and resizes the workflow's Empty Latent Image node
+    # accordingly when re-queuing a row that has one set.
+    python generate_prompt_variations.py prompts.csv 3 "resolution" 5
+
+    # If combined with other aspects, only the non-resolution ones go to the
+    # model for text variation - the same prompt each time is then paired
+    # with a different resolution per variation:
+    python generate_prompt_variations.py prompts.csv 3 "hair color and resolution" 6
 """
 
 import argparse
@@ -301,6 +319,24 @@ def _format_aspect(aspect, vocab, multi_select=None):
     if max_count:
         return f"{aspect} (choose 1 to {max_count} of these values, combined together in the same variation: {', '.join(values)})"
     return f"{aspect} (allowed values only: {', '.join(values)})"
+
+
+STRUCTURAL_ASPECTS = {"resolution"}
+# Aspects that don't describe something to weave into the prompt TEXT -
+# instead their per-variation value drives a structural change to the
+# ComfyUI workflow itself. Handled entirely outside generate_variations()/
+# the LLM: see run_batch()'s resolution_requested handling and
+# rerun_prompts_comfyui.py's use of the output CSV's "Resolution" column.
+
+
+def _cycle_values(values, count):
+    """`count` values cycling through a shuffled copy of `values` (Latin-
+    square style, same technique _build_combo_sequence uses for a single-
+    select vocab aspect) - guarantees values are used as evenly as possible
+    rather than picked independently at random."""
+    shuffled = list(values)
+    random.shuffle(shuffled)
+    return [shuffled[n % len(shuffled)] for n in range(count)]
 
 
 def _build_combo_sequence(aspects, vocab, multi_select, count):
@@ -598,15 +634,30 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
             else:
                 row_aspect = aspect
 
+            row_aspects_list = parse_aspects(row_aspect)
+            resolution_requested = any(a.lower() == "resolution" for a in row_aspects_list)
+            if resolution_requested and not vocab.get("resolution"):
+                print("Error: 'resolution' aspect requires a non-empty 'resolution' list in the vocab file", file=sys.stderr)
+                sys.exit(1)
+            text_aspect = ", ".join(a for a in row_aspects_list if a.lower() != "resolution")
+
             print(f"Original prompt (row {row_num}): {original_prompt[:100]}")
             print(f"Generating {count} variation(s) of '{row_aspect}' via {model} ...")
 
             try:
-                variations = generate_variations(original_prompt, row_aspect, count, model, vocab, multi_select)
+                if text_aspect:
+                    variations = generate_variations(original_prompt, text_aspect, count, model, vocab, multi_select)
+                else:
+                    # resolution was the only requested aspect - nothing in
+                    # the prompt text itself changes, so skip the LLM call
+                    # entirely and just repeat the original prompt.
+                    variations = [original_prompt] * count
             except Exception as e:
                 print(f"Error generating variations for row {row_num}: {e}", file=sys.stderr)
                 failed += 1
                 continue
+
+            resolutions = _cycle_values(vocab["resolution"], count) if resolution_requested else None
 
             if len(variations) < count:
                 print(f"Warning: model returned {len(variations)} variation(s), expected {count}", file=sys.stderr)
@@ -626,11 +677,13 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
                 output_path = variations_dir / f"{csv_path.stem}_row{row_num}_variations.csv"
 
             out_fieldnames = ["Variation", "File Name", "Positive Prompt", "Aspects Changed", "Negative Prompt", "Other Parameters", "Source Format", "Prompt Hash (SHA-256)"]
+            if resolution_requested:
+                out_fieldnames.append("Resolution")
             with open(output_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=out_fieldnames)
                 writer.writeheader()
 
-                writer.writerow({
+                original_row = {
                     "Variation": "original",
                     "File Name": base_name,
                     "Positive Prompt": original_prompt,
@@ -639,10 +692,16 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
                     "Other Parameters": other,
                     "Source Format": source_format,
                     "Prompt Hash (SHA-256)": hash_prompt(original_prompt, negative),
-                })
+                }
+                if resolution_requested:
+                    # Unvaried, same as every other aspect on the original row -
+                    # rerun_prompts_comfyui.py leaves the workflow's own
+                    # Empty Latent Image size alone when this is blank.
+                    original_row["Resolution"] = ""
+                writer.writerow(original_row)
 
                 for i, variation_text in enumerate(variations, 1):
-                    writer.writerow({
+                    variation_row = {
                         "Variation": i,
                         "File Name": f"{base_name}_var{i}",
                         "Positive Prompt": variation_text,
@@ -651,7 +710,10 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
                         "Other Parameters": other,
                         "Source Format": source_format,
                         "Prompt Hash (SHA-256)": hash_prompt(variation_text, negative),
-                    })
+                    }
+                    if resolution_requested:
+                        variation_row["Resolution"] = resolutions[i - 1]
+                    writer.writerow(variation_row)
 
             print(f"Wrote {1 + len(variations)} row(s) to {output_path}")
             succeeded += 1
