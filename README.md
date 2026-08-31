@@ -70,7 +70,13 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   exposes a `run(config_path)` entry point (same JSON-config convention as
   `funkytown-testing-harness`'s `run_test.py`/`lora_test.py`) for driving it
   programmatically - used by `funkytown-testing-harness-gui`'s Variations
-  tab.
+  tab. One aspect, `"resolution"`, is special: rather than describing
+  something to weave into the prompt text, each variation is just assigned
+  one of the vocab's resolution values directly (never shown to the model),
+  written to a `"Resolution"` column in the output CSV -
+  `rerun_prompts_comfyui.py` (below) reads that column and resizes the
+  workflow's Empty Latent Image node accordingly when re-queuing a row that
+  has one set.
 
 ### Submitting to ComfyUI
 
@@ -80,11 +86,14 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   represents your current ComfyUI settings. Automatically turns on
   keyword-matched LoRAs (`lora_rules.json`, empty by default - add a
   gitignored `lora_rules.local.json` for your own rules) via the workflow's
-  rgthree "Power Lora Loader" node. Accepts either a saved ComfyUI workflow
-  (converted automatically via a headless browser) or an API-format export.
-  Also exposes a `run(config_path)` entry point (same JSON-config
-  convention as `run_test.py`/`lora_test.py`/`generate_prompt_variations.py`)
-  taking an explicit list of CSV paths rather than a single file-or-directory
+  rgthree "Power Lora Loader" node, and resizes the workflow's Empty Latent
+  Image node per-row when a `"Resolution"` column is present (written by
+  `generate_prompt_variations.py`'s `"resolution"` aspect - see above).
+  Accepts either a saved ComfyUI workflow (converted automatically via a
+  headless browser) or an API-format export. Also exposes a
+  `run(config_path)` entry point (same JSON-config convention as
+  `run_test.py`/`lora_test.py`/`generate_prompt_variations.py`) taking an
+  explicit list of CSV paths rather than a single file-or-directory
   argument - used by `funkytown-testing-harness-gui`'s Variations tab to
   queue exactly the file(s) a just-finished run produced.
 
