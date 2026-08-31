@@ -91,6 +91,7 @@ import json
 import random
 import re
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -104,6 +105,20 @@ for _stream in (sys.stdout, sys.stderr):
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_MODEL = "gemma4:12b"
 DEFAULT_VOCAB_PATH = Path(__file__).resolve().parent / "prompt_aspect_vocab.json"
+
+
+def list_ollama_models(url=OLLAMA_URL, timeout=5):
+    """Names of models currently pulled in the local Ollama install (via
+    /api/tags), sorted alphabetically - empty list if Ollama isn't running
+    or unreachable, so callers (e.g. a GUI model dropdown) can fall back to
+    DEFAULT_MODEL instead of erroring."""
+    base = url.rsplit("/api/", 1)[0]
+    try:
+        with urllib.request.urlopen(f"{base}/api/tags", timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return []
+    return sorted(m["name"] for m in data.get("models", []) if m.get("name"))
 
 SEPARATOR = "===VARIATION==="
 

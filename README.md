@@ -58,7 +58,7 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   extraction step just wrote. Checks Ollama is actually reachable *before*
   extracting anything (errors out immediately if not, rather than
   extracting for nothing when cleaning would fail row-by-row anyway). Every
-  `clean_prompts.py` option (`--overwrite`, `-v`/`--verbose`,
+  `clean_prompts.py` option (`--overwrite`, `-v`/`--verbose`, `--model`,
   `--submit-to-comfyui`, `--workflow`, `--server`, `--random-seed`) is
   accepted and passed straight through.
 

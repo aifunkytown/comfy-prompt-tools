@@ -23,6 +23,9 @@ Usage:
     # Process every *.csv file in the current directory instead of one file:
     python clean_prompts.py
 
+    # Use a different local Ollama model instead of the default:
+    python clean_prompts.py <path-to-csv> --model llama3.1:8b
+
     # Also submit each cleaned prompt to ComfyUI for rendering as it's cleaned.
     # Keyword-matched LoRAs are turned on automatically, same as
     # rerun_prompts_comfyui.py (see its LORA_RULES):
@@ -135,9 +138,9 @@ def check_ollama_running(timeout=5):
         return False
 
 
-def clean_prompt(positive_prompt: str) -> str:
+def clean_prompt(positive_prompt: str, model: str = MODEL) -> str:
     payload = {
-        "model": MODEL,
+        "model": model,
         "prompt": positive_prompt,
         "system": SYSTEM_PROMPT,
         "stream": False,
@@ -211,7 +214,7 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
 
         print(f"[{i}/{total}] {row.get('File Name', '')}")
         try:
-            row[OUTPUT_COLUMN] = clean_prompt(positive)
+            row[OUTPUT_COLUMN] = clean_prompt(positive, model=args.model)
             succeeded += 1
         except Exception as e:
             print(f"  error: {e}", file=sys.stderr)
@@ -247,7 +250,7 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         if failed and not succeeded:
             print(
                 f"Warning: every attempted row failed - check that Ollama is running "
-                f"({OLLAMA_URL}) and that model '{MODEL}' is pulled.",
+                f"({OLLAMA_URL}) and that model '{args.model}' is pulled.",
                 file=sys.stderr,
             )
     else:
@@ -255,13 +258,13 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
 
 
 def clean_all(csv_paths, submit_to_comfyui=False, workflow=DEFAULT_WORKFLOW, server=DEFAULT_COMFYUI_SERVER,
-              random_seed=False, overwrite=False, verbose=False):
+              random_seed=False, overwrite=False, verbose=False, model=MODEL):
     """Core logic behind main() - process an explicit list of CSV paths
     without going through argparse. Callable directly by other scripts
     (e.g. extract_and_clean.py)."""
     args = argparse.Namespace(
         submit_to_comfyui=submit_to_comfyui, workflow=workflow, server=server,
-        random_seed=random_seed, overwrite=overwrite, verbose=verbose,
+        random_seed=random_seed, overwrite=overwrite, verbose=verbose, model=model,
     )
 
     rerun = workflow_bundle = client_id = None
@@ -292,6 +295,7 @@ def main():
                          help="Randomize seed/noise_seed inputs when submitting to ComfyUI")
     parser.add_argument("--overwrite", action="store_true",
                          help="Reprocess rows that already have a Cleaned Prompt value (default: skip them)")
+    parser.add_argument("--model", default=MODEL, help=f"Ollama model to use (default: {MODEL})")
     parser.add_argument("-v", "--verbose", action="store_true",
                          help="Keep every original column in the saved CSV (default: trim the final output down to just "
                               f"'{PROMPT_COLUMN}' and '{OUTPUT_COLUMN}')")
@@ -308,7 +312,7 @@ def main():
     clean_all(
         csv_paths,
         submit_to_comfyui=args.submit_to_comfyui, workflow=args.workflow, server=args.server,
-        random_seed=args.random_seed, overwrite=args.overwrite, verbose=args.verbose,
+        random_seed=args.random_seed, overwrite=args.overwrite, verbose=args.verbose, model=args.model,
     )
 
 

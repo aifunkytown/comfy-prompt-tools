@@ -23,6 +23,9 @@ Usage:
     # clean_prompts.py's own processing - see its docstring for details:
     python extract_and_clean.py "F:\\Programs\\ComfyFiles\\output\\Prompts" --overwrite --verbose
 
+    # Use a different local Ollama model instead of the default:
+    python extract_and_clean.py "F:\\Programs\\ComfyFiles\\output\\Prompts" --model llama3.1:8b
+
     # Also submit each cleaned prompt to ComfyUI for rendering as it's
     # cleaned (keyword-matched LoRAs are turned on automatically, same as
     # rerun_prompts_comfyui.py):
@@ -67,13 +70,15 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true",
                          help="Keep every original column in the saved CSV (default: trim the final output down to "
                               "just Positive Prompt and Cleaned Prompt)")
+    parser.add_argument("--model", default=clean_prompts.MODEL,
+                         help=f"Ollama model to use (default: {clean_prompts.MODEL})")
     args = parser.parse_args()
 
     if not clean_prompts.check_ollama_running():
         sys.exit(
             f"Error: Ollama doesn't appear to be reachable at {clean_prompts.OLLAMA_URL} - "
             f"start it with `ollama serve` (and make sure the model is pulled: "
-            f"`ollama pull {clean_prompts.MODEL}`), then try again."
+            f"`ollama pull {args.model}`), then try again."
         )
 
     csv_paths = extract_image_prompts.extract_all(args.directory, args.output_dir)
@@ -88,6 +93,7 @@ def main():
         random_seed=args.random_seed,
         overwrite=args.overwrite,
         verbose=args.verbose,
+        model=args.model,
     )
 
 
