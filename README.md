@@ -13,7 +13,10 @@ you'd rather `pip install -e .`).
 - Python 3.10+
 - [Ollama](https://ollama.com/) running locally, with your chosen model pulled
   (`clean_prompts.py` and `generate_prompt_variations.py` default to
-  `gemma4:12b` - override with `--model` or by editing the `MODEL` constant)
+  `gemma4:12b` - override with `--model` or by editing the `MODEL` constant).
+  `clean_prompts.py` and `rerun_prompts_comfyui.py` also need
+  `huihui_ai/qwen2.5-vl-abliterated:7b` pulled for their image-description
+  fallback (a row with no prompt text at all - see each script below)
 - A running ComfyUI server (for `rerun_prompts_comfyui.py` / `clean_prompts.py --submit-to-comfyui`)
 
 ```bash
@@ -40,19 +43,28 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   and pulls the embedded generation prompt out of each one's metadata
   (ComfyUI, Automatic1111, or EXIF UserComment), writing one
   `<folder>-prompts.csv` per folder of images. Dedupes on exact `Positive
-  Prompt` text within a folder; images with no positive prompt are skipped.
+  Prompt` text within a folder; an image with no positive prompt metadata is
+  still written, with that column empty and `File Path` pointing at the
+  image - `clean_prompts.py` and `rerun_prompts_comfyui.py` both fall back to
+  describing that image directly via a vision model instead of having
+  nothing to work with (see each below).
 
 ### Cleaning / rewriting
 
 - **`clean_prompts.py`** - Reads a prompt CSV, asks a local Ollama model to
   rewrite each `Positive Prompt` into natural-language phrasing for a modern
   text-to-image model, and writes the result into a `Cleaned Prompt` column.
-  Can optionally submit each cleaned prompt straight to ComfyUI as it's
-  cleaned (`--submit-to-comfyui`), routing keyword-matched LoRAs on
-  automatically (see `rerun_prompts_comfyui.py`'s `lora_rules.json`). Its
-  own system prompt is likewise split base/local - the base prompt lives in
-  `clean_prompts.json` (checked in, edit it there rather than in code), and
-  `clean_prompts.local.json` next to it can append personal instructions.
+  A row with no `Positive Prompt` text at all falls back to describing the
+  image at that row's `File Path` directly, via a vision-capable model
+  (`VISION_MODEL`, independent of `--model`) instead of being skipped - see
+  `extract_image_prompts.py` above. Can optionally submit each cleaned
+  prompt straight to ComfyUI as it's cleaned (`--submit-to-comfyui`),
+  routing keyword-matched LoRAs on automatically (see
+  `rerun_prompts_comfyui.py`'s `lora_rules.json`). Its system prompts are
+  likewise split base/local - both the text-rewrite prompt and the
+  image-description prompt live in `clean_prompts.json` (checked in, edit
+  them there rather than in code), and `clean_prompts.local.json` next to it
+  can append personal instructions onto the text-rewrite one.
 
 - **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
   `clean_prompts.py` in one command instead of two, on whatever CSV(s) the
@@ -84,7 +96,13 @@ pass the equivalent CLI flag, where available) to point at your own setup.
 - **`rerun_prompts_comfyui.py`** - Resubmits every row of a prompt CSV (or
   every CSV in a directory) to a running ComfyUI server, swapping in each
   row's positive/negative prompt text against a workflow template that
-  represents your current ComfyUI settings. Automatically turns on
+  represents your current ComfyUI settings. A row with no prompt text at all
+  gets the same vision-model image-description fallback as `clean_prompts.py`
+  (using that row's `File Path`) instead of being skipped - this works
+  directly on a CSV straight out of `extract_image_prompts.py`, without ever
+  going through `clean_prompts.py` first; the two scripts' fallbacks are
+  independent of each other, so either still works entirely on its own.
+  Automatically turns on
   keyword-matched LoRAs (`lora_rules.json`, empty by default - add a
   gitignored `lora_rules.local.json` for your own rules) via the workflow's
   rgthree "Power Lora Loader" node, and resizes the workflow's Empty Latent

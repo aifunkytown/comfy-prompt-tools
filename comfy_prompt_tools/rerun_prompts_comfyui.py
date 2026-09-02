@@ -26,6 +26,19 @@ Multiple rules can match the same prompt at once, in which case every
 matching LoRA is turned on together. Nothing else about the workflow
 changes.
 
+Image-description fallback for rows with no prompt metadata
+-------------------------------------------------------------
+A row with no Positive Prompt text at all - extract_image_prompts.py
+writes one of these for an image with no embedded metadata, rather than
+skipping it (see that script's own docstring) - is described directly
+instead, via a vision-capable Ollama model (clean_prompts.VISION_MODEL)
+shown the image at that row's "File Path" column. The generated
+description is then used as that row's prompt text exactly like any other
+row's. A row that already has prompt text is never affected by this - it's
+purely a fallback for rows with nothing else to go on, and this script
+still works standalone on a CSV that never goes through clean_prompts.py
+at all.
+
 Resolution from generate_prompt_variations.py's "resolution" aspect
 ------------------------------------------------------------------
 If a CSV row has a non-empty "Resolution" column (written by
@@ -89,8 +102,10 @@ from pathlib import Path
 
 try:
     from local_config import load_named_list  # run directly: python rerun_prompts_comfyui.py
+    from clean_prompts import describe_image, VISION_MODEL
 except ImportError:
     from comfy_prompt_tools.local_config import load_named_list  # imported as a package
+    from comfy_prompt_tools.clean_prompts import describe_image, VISION_MODEL
 
 LORA_RULES_PATH = Path(__file__).resolve().parent / "lora_rules.json"
 
@@ -372,16 +387,21 @@ def load_csv_rows(csv_path, start_row, end_row):
 
 
 def extract_prompt_text(row, cleaned_col):
-    """Return (positive_text, negative_text, notes, resolution) for a CSV
-    row - resolution is generate_prompt_variations.py's optional
+    """Return (positive_text, negative_text, notes, resolution, image_path)
+    for a CSV row - resolution is generate_prompt_variations.py's optional
     "Resolution" column ("WIDTHxHEIGHT", or "" if that aspect wasn't used/
-    this is an unvaried "original" row)."""
+    this is an unvaried "original" row). image_path is the row's "File
+    Path", used as a describe_image() fallback (see run_batch) when
+    positive_text is empty - extract_image_prompts.py writes a row like
+    that for an image with no embedded prompt metadata, instead of
+    skipping it."""
     cleaned_text = (row.get(cleaned_col) or "").strip() if cleaned_col else ""
     positive_text = cleaned_text or (row.get("Positive Prompt") or "").strip()
     negative_text = (row.get("Negative Prompt") or "").strip()
     notes = (row.get("Notes") or "").strip()
     resolution = (row.get("Resolution") or "").strip()
-    return positive_text, negative_text, notes, resolution
+    image_path = (row.get("File Path") or "").strip()
+    return positive_text, negative_text, notes, resolution, image_path
 
 
 def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_row=None, end_row=None, random_seed=False, delay=0.2, log_path=None):
@@ -398,7 +418,7 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
         sys.exit(1)
 
     # Phase 1: read every row from every CSV up front (no network activity yet).
-    entries = []  # (csv_path, row_num, end_row_num, name, positive_text, negative_text, notes, resolution)
+    entries = []  # (csv_path, row_num, end_row_num, name, positive_text, negative_text, notes, resolution, image_path)
     for csv_path in csv_paths:
         cleaned_col, numbered_rows = load_csv_rows(csv_path, start_row, end_row)
         if cleaned_col:
@@ -408,8 +428,8 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
         end_row_num = numbered_rows[-1][0]
         for row_num, row in numbered_rows:
             name = row.get("File Name", f"row{row_num}")
-            positive_text, negative_text, notes, resolution = extract_prompt_text(row, cleaned_col)
-            entries.append((csv_path, row_num, end_row_num, name, positive_text, negative_text, notes, resolution))
+            positive_text, negative_text, notes, resolution, image_path = extract_prompt_text(row, cleaned_col)
+            entries.append((csv_path, row_num, end_row_num, name, positive_text, negative_text, notes, resolution, image_path))
 
     # Phase 2: load/convert the workflow once, before queuing a single prompt. Once
     # prompts start landing in ComfyUI's queue, driving the browser to convert a
@@ -425,12 +445,22 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
         log_writer = csv.writer(log_file)
         log_writer.writerow(["CSV File", "File Name", "Status", "Prompt ID", "LoRAs", "Filename Prefix", "Detail"])
 
-        for csv_path, i, end_row_num, name, positive_text, negative_text, notes, resolution in entries:
+        for csv_path, i, end_row_num, name, positive_text, negative_text, notes, resolution, image_path in entries:
             label = f"[{csv_path.name} {i}/{end_row_num}]"
 
-            if notes or not positive_text:
-                print(f"{label} Skipping {name}: {notes or 'no positive prompt text'}")
-                log_writer.writerow([csv_path.name, name, "skipped", "", "", "", notes or "no positive prompt text"])
+            if not positive_text and image_path and Path(image_path).is_file():
+                try:
+                    positive_text = describe_image(image_path)
+                    print(f"{label} {name} has no prompt metadata - described the image via {VISION_MODEL} instead")
+                except Exception as e:
+                    print(f"{label} Skipping {name}: image description failed: {e}", file=sys.stderr)
+                    log_writer.writerow([csv_path.name, name, "skipped", "", "", "", f"image description failed: {e}"])
+                    continue
+
+            if not positive_text:
+                detail = notes or "no positive prompt text"
+                print(f"{label} Skipping {name}: {detail}")
+                log_writer.writerow([csv_path.name, name, "skipped", "", "", "", detail])
                 continue
 
             lora_matches = select_loras(positive_text)
