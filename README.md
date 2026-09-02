@@ -57,7 +57,12 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   A row with no `Positive Prompt` text at all falls back to describing the
   image at that row's `File Path` directly, via a vision-capable model
   (`VISION_MODEL`, independent of `--model`) instead of being skipped - see
-  `extract_image_prompts.py` above. Can optionally submit each cleaned
+  `extract_image_prompts.py` above. That row's `Positive Prompt` is then set
+  to the literal marker `not found` (rather than left blank) once described,
+  so a later re-run recognizes it and repeats the *image* fallback instead
+  of feeding that marker through the text-rewrite model as if it were a
+  real prompt - the actual description lives in `Cleaned Prompt`, never
+  cleaned twice. Can optionally submit each cleaned
   prompt straight to ComfyUI as it's cleaned (`--submit-to-comfyui`),
   routing keyword-matched LoRAs on automatically (see
   `rerun_prompts_comfyui.py`'s `lora_rules.json`). Its system prompts are
@@ -101,8 +106,11 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   (using that row's `File Path`) instead of being skipped - this works
   directly on a CSV straight out of `extract_image_prompts.py`, without ever
   going through `clean_prompts.py` first; the two scripts' fallbacks are
-  independent of each other, so either still works entirely on its own.
-  Automatically turns on
+  independent of each other, so either still works entirely on its own. If
+  the CSV *has* already been through `clean_prompts.py`, a row's `not found`
+  `Positive Prompt` marker (see above) is never treated as real prompt text
+  - the `Cleaned Prompt` column's actual description is used instead, with
+  no redundant Ollama call. Automatically turns on
   keyword-matched LoRAs (`lora_rules.json`, empty by default - add a
   gitignored `lora_rules.local.json` for your own rules) via the workflow's
   rgthree "Power Lora Loader" node, and resizes the workflow's Empty Latent

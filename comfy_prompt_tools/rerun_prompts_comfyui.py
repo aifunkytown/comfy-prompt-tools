@@ -102,10 +102,10 @@ from pathlib import Path
 
 try:
     from local_config import load_named_list  # run directly: python rerun_prompts_comfyui.py
-    from clean_prompts import describe_image, VISION_MODEL
+    from clean_prompts import describe_image, VISION_MODEL, NOT_FOUND_MARKER
 except ImportError:
     from comfy_prompt_tools.local_config import load_named_list  # imported as a package
-    from comfy_prompt_tools.clean_prompts import describe_image, VISION_MODEL
+    from comfy_prompt_tools.clean_prompts import describe_image, VISION_MODEL, NOT_FOUND_MARKER
 
 LORA_RULES_PATH = Path(__file__).resolve().parent / "lora_rules.json"
 
@@ -394,9 +394,14 @@ def extract_prompt_text(row, cleaned_col):
     Path", used as a describe_image() fallback (see run_batch) when
     positive_text is empty - extract_image_prompts.py writes a row like
     that for an image with no embedded prompt metadata, instead of
-    skipping it."""
+    skipping it. A literal "Positive Prompt" of NOT_FOUND_MARKER (written
+    by clean_prompts.py once it's already run the image-description
+    fallback for this row) is treated the same as empty here, never used
+    as real prompt text - the real description lives in the Cleaned
+    Prompt column instead, which cleaned_text already takes from first."""
     cleaned_text = (row.get(cleaned_col) or "").strip() if cleaned_col else ""
-    positive_text = cleaned_text or (row.get("Positive Prompt") or "").strip()
+    raw_positive = (row.get("Positive Prompt") or "").strip()
+    positive_text = cleaned_text or ("" if raw_positive == NOT_FOUND_MARKER else raw_positive)
     negative_text = (row.get("Negative Prompt") or "").strip()
     notes = (row.get("Notes") or "").strip()
     resolution = (row.get("Resolution") or "").strip()

@@ -66,6 +66,13 @@ VISION_MODEL = "huihui_ai/qwen2.5-vl-abliterated:7b"
 PROMPT_COLUMN = "Positive Prompt"
 OUTPUT_COLUMN = "Cleaned Prompt"
 IMAGE_PATH_COLUMN = "File Path"
+# Written into PROMPT_COLUMN once the image-description fallback has run for
+# a row, in place of leaving it blank - marks that row as "described from
+# the image, not from prompt text" so a later re-run (or rerun_prompts_
+# comfyui.py reading the same CSV) recognizes it and doesn't try to feed
+# this literal string through the text-rewrite model as if it were a real
+# prompt.
+NOT_FOUND_MARKER = "not found"
 
 RERUN_SCRIPT_DIR = str(Path(__file__).resolve().parent)  # rerun_prompts_comfyui.py lives alongside this script
 DEFAULT_WORKFLOW = r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t2i.json"
@@ -233,18 +240,24 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         if row.get(OUTPUT_COLUMN, "").strip() and not args.overwrite:
             continue  # already done, e.g. resuming a previous run
 
-        positive = row.get(PROMPT_COLUMN, "") or ""
+        positive = (row.get(PROMPT_COLUMN, "") or "").strip()
         image_path = row.get(IMAGE_PATH_COLUMN, "") or ""
-        if not positive.strip() and not (image_path and Path(image_path).is_file()):
+        # NOT_FOUND_MARKER means a prior run already tried the text prompt
+        # and found none - treat it the same as genuinely empty, not as
+        # real prompt text to run through the text-rewrite model again.
+        use_image_fallback = not positive or positive == NOT_FOUND_MARKER
+
+        if use_image_fallback and not (image_path and Path(image_path).is_file()):
             row[OUTPUT_COLUMN] = ""
             continue
 
         print(f"[{i}/{total}] {row.get('File Name', '')}")
         try:
-            if positive.strip():
-                row[OUTPUT_COLUMN] = clean_prompt(positive, model=args.model)
-            else:
+            if use_image_fallback:
                 row[OUTPUT_COLUMN] = describe_image(image_path)
+                row[PROMPT_COLUMN] = NOT_FOUND_MARKER
+            else:
+                row[OUTPUT_COLUMN] = clean_prompt(positive, model=args.model)
             succeeded += 1
         except Exception as e:
             print(f"  error: {e}", file=sys.stderr)
