@@ -54,6 +54,13 @@ def load_local_text(base_path: Path, text_key: str) -> str:
     return json.loads(local_path.read_text(encoding="utf-8")).get(text_key, "")
 
 
+def load_text(base_path: Path, text_key: str) -> str:
+    """Read base_path's own (checked-in) JSON and return text_key - the
+    base-file counterpart to load_local_text, for a single text value
+    (e.g. a system prompt) instead of a named list."""
+    return json.loads(base_path.read_text(encoding="utf-8"))[text_key]
+
+
 def load_list(base_path: Path, list_key: str):
     """Load base_path's JSON list under list_key, extended (not
     override-by-name - just concatenated) by local_path_for(base_path)'s

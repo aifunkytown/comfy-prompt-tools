@@ -50,8 +50,9 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   Can optionally submit each cleaned prompt straight to ComfyUI as it's
   cleaned (`--submit-to-comfyui`), routing keyword-matched LoRAs on
   automatically (see `rerun_prompts_comfyui.py`'s `lora_rules.json`). Its
-  own system prompt is likewise split base/local - `clean_prompts.local.json`
-  next to it can append personal instructions.
+  own system prompt is likewise split base/local - the base prompt lives in
+  `clean_prompts.json` (checked in, edit it there rather than in code), and
+  `clean_prompts.local.json` next to it can append personal instructions.
 
 - **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
   `clean_prompts.py` in one command instead of two, on whatever CSV(s) the
