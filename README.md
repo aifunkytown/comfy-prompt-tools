@@ -62,7 +62,9 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   so a later re-run recognizes it and repeats the *image* fallback instead
   of feeding that marker through the text-rewrite model as if it were a
   real prompt - the actual description lives in `Cleaned Prompt`, never
-  cleaned twice. Can optionally submit each cleaned
+  cleaned twice. Each row is also content-rated in that same Ollama call,
+  using `rate_prompts.py`'s rubric - see below - so rating never costs a
+  second round trip over the same text. Can optionally submit each cleaned
   prompt straight to ComfyUI as it's cleaned (`--submit-to-comfyui`),
   routing keyword-matched LoRAs on automatically (see
   `rerun_prompts_comfyui.py`'s `lora_rules.json`). Its system prompts are
@@ -70,6 +72,20 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   image-description prompt live in `clean_prompts.json` (checked in, edit
   them there rather than in code), and `clean_prompts.local.json` next to it
   can append personal instructions onto the text-rewrite one.
+
+- **`rate_prompts.py`** - Content-rates a prompt CSV on a movie-style scale
+  (`G`/`PG`/`PG-13`/`R`/`X`/`XXX`, or `REVIEW` for suspected underage
+  content) via a local Ollama model, writing `Content Rating` and `Rating
+  Reason` columns - rates `Cleaned Prompt` when present, falling back to
+  `Positive Prompt` otherwise (matching what actually gets sent to
+  ComfyUI). `clean_prompts.py` already calls this rubric inline as part of
+  its own Ollama call, so a CSV it just produced is already rated - run
+  this script directly only to backfill ratings on a CSV that predates that
+  integration, was hand-edited afterward, or never went through
+  `clean_prompts.py` at all (e.g. a `generate_prompt_variations.py` CSV).
+  Same base/local split as everywhere else: the rubric lives in
+  `rate_prompts.json` (checked in), `rate_prompts.local.json` next to it
+  can append personal instructions.
 
 - **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
   `clean_prompts.py` in one command instead of two, on whatever CSV(s) the

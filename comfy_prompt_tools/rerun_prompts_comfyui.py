@@ -455,7 +455,7 @@ def run_batch(csv_paths, workflow_path, server="http://127.0.0.1:8000", start_ro
 
             if not positive_text and image_path and Path(image_path).is_file():
                 try:
-                    positive_text = describe_image(image_path)
+                    positive_text, _rating, _reason = describe_image(image_path)
                     print(f"{label} {name} has no prompt metadata - described the image via {VISION_MODEL} instead")
                 except Exception as e:
                     print(f"{label} Skipping {name}: image description failed: {e}", file=sys.stderr)
