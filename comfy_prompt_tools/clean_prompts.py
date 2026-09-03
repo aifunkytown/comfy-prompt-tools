@@ -4,6 +4,15 @@ Ollama model to rewrite each one as a natural-language prompt suitable for
 a modern text-to-image model (e.g. Krea 2), and writes the result back into
 a "Cleaned Prompt" column in the same CSV.
 
+Each row is also content-rated in that same Ollama call, using
+rate_prompts.py's rubric (rate_prompts.json) - one round trip produces both
+the rewritten prompt and its "Content Rating"/"Rating Reason" instead of a
+separate rate_prompts.py pass making a second call for the same text. A CSV
+cleaned before this existed (or one whose Cleaned Prompt was hand-edited
+afterward) has no rating yet and won't get one just by re-running this
+script without --overwrite (the row's already "done") - run rate_prompts.py
+directly on it instead to backfill ratings without re-cleaning.
+
 A row with no Positive Prompt text at all (extract_image_prompts.py writes
 one of these for an image with no embedded metadata, instead of skipping
 it - see that script's own docstring) falls back to describing the image
@@ -11,13 +20,15 @@ directly: a vision-capable Ollama model (VISION_MODEL) is shown the image
 itself, via that row's "File Path" column, instead of having no text to
 rewrite. This only ever triggers when there's truly no prompt text to work
 with - a row that already has one always goes through the normal text
-rewrite above, on --model or the default, unchanged.
+rewrite above, on --model or the default, unchanged. This path is rated in
+the same call too.
 
-By default the final saved CSV is trimmed down to just the "Positive Prompt"
-and "Cleaned Prompt" columns, dropping File Name/File Path/Negative Prompt/
-etc. Pass -v/--verbose to keep every original column instead. Either way,
-in-progress checkpoints during a run always keep every column, so a crash
-mid-run never loses data for rows not yet processed.
+By default the final saved CSV is trimmed down to just the "Positive Prompt",
+"Cleaned Prompt", "Content Rating", and "Rating Reason" columns, dropping
+File Name/File Path/Negative Prompt/etc. Pass -v/--verbose to keep every
+original column instead. Either way, in-progress checkpoints during a run
+always keep every column, so a crash mid-run never loses data for rows not
+yet processed.
 
 Requires Ollama running locally (ollama serve) with both models pulled:
     ollama pull gemma4:12b
@@ -80,8 +91,18 @@ DEFAULT_COMFYUI_SERVER = "http://127.0.0.1:8000"
 
 try:
     from local_config import load_local_text, load_text  # run directly: python clean_prompts.py
+    import rate_prompts
 except ImportError:
     from comfy_prompt_tools.local_config import load_local_text, load_text  # imported as a package
+    from comfy_prompt_tools import rate_prompts
+
+RATING_COLUMN = rate_prompts.RATING_COLUMN
+REASON_COLUMN = rate_prompts.REASON_COLUMN
+# Separates the rewritten/described text from its content rating within one
+# combined Ollama response (see _combined_system_prompt/_split_response_and_
+# rating below) - distinctive enough that it won't appear in an actual
+# prompt or description by accident.
+RATING_DELIMITER = "===RATING==="
 
 # clean_prompts.json (checked in) holds "system_prompt_base" - edit the
 # prompt there, not in code. clean_prompts.local.json next to it (gitignored,
@@ -100,8 +121,27 @@ def build_system_prompt():
     return base + " " + addendum if addendum else base
 
 
-SYSTEM_PROMPT = build_system_prompt()
-IMAGE_DESCRIPTION_SYSTEM_PROMPT = load_text(SYSTEM_PROMPT_CONFIG_PATH, "image_description_system_prompt")
+def _combined_system_prompt(base_prompt: str) -> str:
+    """Appends rate_prompts.py's content-rating rubric onto a rewrite/
+    description system prompt, so one Ollama call produces both instead of
+    rate_prompts.py needing a separate call over the same text afterward.
+    The rubric's own "respond with exactly one line" instruction still
+    applies - just to the second part of this combined response, after the
+    delimiter, rather than to the whole reply."""
+    return (
+        f"{base_prompt}\n\n"
+        f"After writing your response above, add a new line containing "
+        f"exactly \"{RATING_DELIMITER}\" and nothing else, then rate that "
+        f"same response using the rubric below, following its own output "
+        f"format exactly on the line after the delimiter.\n\n"
+        f"{rate_prompts.SYSTEM_PROMPT}"
+    )
+
+
+SYSTEM_PROMPT = _combined_system_prompt(build_system_prompt())
+IMAGE_DESCRIPTION_SYSTEM_PROMPT = _combined_system_prompt(
+    load_text(SYSTEM_PROMPT_CONFIG_PATH, "image_description_system_prompt")
+)
 
 # Curly/smart-typography characters the model sometimes emits despite being
 # told not to - mapped to their plain-ASCII equivalents so a bad response
@@ -146,7 +186,29 @@ def check_ollama_running(timeout=5):
         return False
 
 
-def clean_prompt(positive_prompt: str, model: str = MODEL) -> str:
+def _split_response_and_rating(raw_response: str):
+    """Splits a combined rewrite/description + rating response (see
+    _combined_system_prompt) on RATING_DELIMITER into (main_text, rating,
+    reason). If the model ignored the delimiter instruction, the whole
+    response is kept as main_text and the rating comes back "UNPARSED" -
+    getting the rewritten/described text right matters more than the
+    rating succeeding, so a rating-parsing miss never costs the row its
+    actual prompt text."""
+    if RATING_DELIMITER in raw_response:
+        main_part, rating_part = raw_response.split(RATING_DELIMITER, 1)
+    else:
+        main_part, rating_part = raw_response, ""
+
+    main_text = sanitize_ascii(main_part.strip())
+    if rating_part.strip():
+        rating, reason = rate_prompts.parse_rating_response(rating_part)
+    else:
+        rating, reason = "UNPARSED", "no rating delimiter found in response"
+    return main_text, rating, reason
+
+
+def clean_prompt(positive_prompt: str, model: str = MODEL):
+    """Returns (cleaned_text, rating, reason) - see _split_response_and_rating."""
     payload = {
         "model": model,
         "prompt": positive_prompt,
@@ -160,13 +222,14 @@ def clean_prompt(positive_prompt: str, model: str = MODEL) -> str:
     )
     with urllib.request.urlopen(req, timeout=180) as resp:
         result = json.loads(resp.read().decode("utf-8"))
-    return sanitize_ascii(result["response"].strip())
+    return _split_response_and_rating(result["response"])
 
 
-def describe_image(image_path, model: str = VISION_MODEL) -> str:
+def describe_image(image_path, model: str = VISION_MODEL):
     """Ask a local vision-capable Ollama model to describe an image
     directly - the fallback for a row with no prompt text at all to
-    rewrite (see the module docstring). image_path is read and sent as
+    rewrite (see the module docstring). Returns (description, rating,
+    reason), same as clean_prompt(). image_path is read and sent as
     base64, same request shape as clean_prompt() otherwise. A larger
     timeout than clean_prompt()'s, since a vision model's first pass over
     an image can take noticeably longer than a pure text rewrite."""
@@ -185,7 +248,7 @@ def describe_image(image_path, model: str = VISION_MODEL) -> str:
     )
     with urllib.request.urlopen(req, timeout=240) as resp:
         result = json.loads(resp.read().decode("utf-8"))
-    return sanitize_ascii(result["response"].strip())
+    return _split_response_and_rating(result["response"])
 
 
 def submit_cleaned_prompt(rerun, workflow_bundle, server, client_id, row, cleaned_text, randomize_seed):
@@ -227,8 +290,9 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         print(f"Skipping {csv_path}: no '{PROMPT_COLUMN}' column found")
         return
 
-    if OUTPUT_COLUMN not in fieldnames:
-        fieldnames.append(OUTPUT_COLUMN)
+    for column in (OUTPUT_COLUMN, RATING_COLUMN, REASON_COLUMN):
+        if column not in fieldnames:
+            fieldnames.append(column)
 
     tmp_path = csv_path + ".tmp"
     total = len(rows)
@@ -254,14 +318,17 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         print(f"[{i}/{total}] {row.get('File Name', '')}")
         try:
             if use_image_fallback:
-                row[OUTPUT_COLUMN] = describe_image(image_path)
+                row[OUTPUT_COLUMN], row[RATING_COLUMN], row[REASON_COLUMN] = describe_image(image_path)
                 row[PROMPT_COLUMN] = NOT_FOUND_MARKER
             else:
-                row[OUTPUT_COLUMN] = clean_prompt(positive, model=args.model)
+                row[OUTPUT_COLUMN], row[RATING_COLUMN], row[REASON_COLUMN] = clean_prompt(positive, model=args.model)
+            print(f"  Rating: {row[RATING_COLUMN]} - {row[REASON_COLUMN]}")
             succeeded += 1
         except Exception as e:
             print(f"  error: {e}", file=sys.stderr)
             row[OUTPUT_COLUMN] = ""
+            row[RATING_COLUMN] = ""
+            row[REASON_COLUMN] = ""
             failed += 1
 
         if args.submit_to_comfyui and row[OUTPUT_COLUMN]:
@@ -283,9 +350,11 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         if not args.verbose:
             # Checkpoints above always keep every column (so a crash mid-run doesn't
             # lose File Name/Negative Prompt/etc for rows not yet processed) - only
-            # the final saved file gets trimmed down to just the two prompt columns.
+            # the final saved file gets trimmed down to the prompt + rating columns.
             with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=[PROMPT_COLUMN, OUTPUT_COLUMN], extrasaction="ignore")
+                writer = csv.DictWriter(
+                    f, fieldnames=[PROMPT_COLUMN, OUTPUT_COLUMN, RATING_COLUMN, REASON_COLUMN], extrasaction="ignore"
+                )
                 writer.writeheader()
                 writer.writerows(rows)
 
@@ -342,7 +411,7 @@ def main():
     parser.add_argument("--model", default=MODEL, help=f"Ollama model to use (default: {MODEL})")
     parser.add_argument("-v", "--verbose", action="store_true",
                          help="Keep every original column in the saved CSV (default: trim the final output down to just "
-                              f"'{PROMPT_COLUMN}' and '{OUTPUT_COLUMN}')")
+                              f"'{PROMPT_COLUMN}', '{OUTPUT_COLUMN}', '{RATING_COLUMN}', and '{REASON_COLUMN}')")
     args = parser.parse_args()
 
     if args.csv_path:

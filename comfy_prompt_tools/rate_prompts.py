@@ -1,0 +1,208 @@
+"""
+Reads a prompt CSV and asks a local Ollama model to content-rate each row on
+a movie-style scale (G, PG, PG-13, R, X, XXX, or REVIEW for suspected
+underage content - see rate_prompts.json for the full rubric), writing the
+result into "Content Rating" and "Rating Reason" columns in the same CSV.
+
+Rates the "Cleaned Prompt" column when present and non-empty, falling back to
+"Positive Prompt" otherwise - matching what actually gets sent to ComfyUI.
+
+The rubric lives in rate_prompts.json (checked in, edit it there rather than
+in code); rate_prompts.local.json next to it can append personal instructions
+via a "system_prompt_addendum" string, same pattern as clean_prompts.py.
+
+Requires Ollama running locally (ollama serve) with the model already pulled:
+    ollama pull gemma4:12b
+
+Usage:
+    python rate_prompts.py <path-to-csv>
+
+    # Process every *.csv file in the current directory instead of one file:
+    python rate_prompts.py
+
+    # Use a different local Ollama model instead of the default:
+    python rate_prompts.py <path-to-csv> --model llama3.1:8b
+
+    # Reprocess rows that already have a Content Rating:
+    python rate_prompts.py <path-to-csv> --overwrite
+"""
+
+import argparse
+import csv
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"  # "localhost" can resolve to ::1 first and get refused if Ollama only binds IPv4
+MODEL = "gemma4:12b"
+RATING_COLUMN = "Content Rating"
+REASON_COLUMN = "Rating Reason"
+
+VALID_RATINGS = ("G", "PG", "PG-13", "R", "X", "XXX", "REVIEW")
+RATING_ALIASES = {r.replace("-", ""): r for r in VALID_RATINGS}
+
+try:
+    from local_config import load_text, load_local_text  # run directly: python rate_prompts.py
+except ImportError:
+    from comfy_prompt_tools.local_config import load_text, load_local_text  # imported as a package
+
+# rate_prompts.json (checked in) holds "system_prompt_base" - edit the rubric
+# there, not in code. rate_prompts.local.json next to it (gitignored, same
+# base+local pattern as everywhere else in this project) can add personal
+# instructions on top via a "system_prompt_addendum" string.
+SYSTEM_PROMPT_CONFIG_PATH = Path(__file__).resolve().parent / "rate_prompts.json"
+
+
+def build_system_prompt():
+    base = load_text(SYSTEM_PROMPT_CONFIG_PATH, "system_prompt_base")
+    addendum = load_local_text(SYSTEM_PROMPT_CONFIG_PATH, "system_prompt_addendum")
+    return base + " " + addendum if addendum else base
+
+
+SYSTEM_PROMPT = build_system_prompt()
+
+
+def check_ollama_running(timeout=5):
+    """True if Ollama's HTTP API is reachable - checked via /api/tags rather
+    than /api/generate, since listing local models doesn't require an
+    actual (slower, model-dependent) inference request just to prove the
+    server is up."""
+    base = OLLAMA_URL.rsplit("/api/", 1)[0]
+    try:
+        with urllib.request.urlopen(f"{base}/api/tags", timeout=timeout):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def parse_rating_response(text: str):
+    """Split the model's 'RATING | reason' response into (rating, reason).
+    Falls back to rating="UNPARSED" (with the full raw response as the
+    reason, so nothing is silently lost) if the rating isn't one of
+    VALID_RATINGS once normalized (case, spacing, and hyphen-insensitive)."""
+    text = text.strip()
+    if "|" in text:
+        rating_part, reason = text.split("|", 1)
+        reason = reason.strip()
+    else:
+        rating_part, reason = text, ""
+
+    normalized = rating_part.strip().upper().replace(" ", "").replace(".", "").replace("-", "")
+    rating = RATING_ALIASES.get(normalized)
+    if rating is None:
+        return "UNPARSED", text
+    return rating, reason
+
+
+def get_input_text(row) -> str:
+    cleaned = (row.get("Cleaned Prompt") or "").strip()
+    return cleaned or (row.get("Positive Prompt") or "").strip()
+
+
+def rate_prompt(text: str, model: str = MODEL):
+    payload = {
+        "model": model,
+        "prompt": text,
+        "system": SYSTEM_PROMPT,
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return parse_rating_response(result["response"])
+
+
+def process_csv(csv_path, args):
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+
+    if "Positive Prompt" not in fieldnames and "Cleaned Prompt" not in fieldnames:
+        print(f"Skipping {csv_path}: no 'Positive Prompt' or 'Cleaned Prompt' column found")
+        return
+
+    for column in (RATING_COLUMN, REASON_COLUMN):
+        if column not in fieldnames:
+            fieldnames.append(column)
+
+    tmp_path = str(csv_path) + ".tmp"
+    total = len(rows)
+    wrote_checkpoint = False
+    succeeded = 0
+    failed = 0
+
+    for i, row in enumerate(rows, 1):
+        if row.get(RATING_COLUMN, "").strip() and not args.overwrite:
+            continue  # already rated, e.g. resuming a previous run
+
+        text = get_input_text(row)
+        if not text:
+            row[RATING_COLUMN] = ""
+            row[REASON_COLUMN] = ""
+            continue
+
+        print(f"[{i}/{total}] {row.get('File Name', '')}")
+        try:
+            rating, reason = rate_prompt(text, model=args.model)
+            row[RATING_COLUMN] = rating
+            row[REASON_COLUMN] = reason
+            print(f"  {rating} - {reason}")
+            succeeded += 1
+        except Exception as e:
+            print(f"  error: {e}", file=sys.stderr)
+            row[RATING_COLUMN] = ""
+            row[REASON_COLUMN] = ""
+            failed += 1
+
+        # checkpoint after every row so a crash doesn't lose progress
+        with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        wrote_checkpoint = True
+
+    if wrote_checkpoint:
+        os.replace(tmp_path, csv_path)
+        print(f"Done. {succeeded} rated, {failed} failed.")
+        if failed and not succeeded:
+            print(
+                f"Warning: every attempted row failed - check that Ollama is running "
+                f"({OLLAMA_URL}) and that model '{args.model}' is pulled.",
+                file=sys.stderr,
+            )
+    else:
+        print("Nothing to do - every row already has a Content Rating (use --overwrite to redo them).")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("csv_path", nargs="?", default=None,
+                         help="Path to the CSV file to process (default: every *.csv file in the current directory)")
+    parser.add_argument("--model", default=MODEL, help=f"Ollama model to use (default: {MODEL})")
+    parser.add_argument("--overwrite", action="store_true",
+                         help="Reprocess rows that already have a Content Rating (default: skip them)")
+    args = parser.parse_args()
+
+    if args.csv_path:
+        csv_paths = [args.csv_path]
+    else:
+        csv_paths = sorted(str(p) for p in Path.cwd().glob("*.csv"))
+        if not csv_paths:
+            print("No CSV files found in the current directory.", file=sys.stderr)
+            sys.exit(1)
+
+    for csv_path in csv_paths:
+        print(f"=== {csv_path} ===")
+        process_csv(csv_path, args)
+
+
+if __name__ == "__main__":
+    main()
