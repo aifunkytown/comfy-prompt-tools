@@ -4,14 +4,24 @@ Ollama model to rewrite each one as a natural-language prompt suitable for
 a modern text-to-image model (e.g. Krea 2), and writes the result back into
 a "Cleaned Prompt" column in the same CSV.
 
+A row with no Positive Prompt text at all (extract_image_prompts.py writes
+one of these for an image with no embedded metadata, instead of skipping
+it - see that script's own docstring) falls back to describing the image
+directly: a vision-capable Ollama model (VISION_MODEL) is shown the image
+itself, via that row's "File Path" column, instead of having no text to
+rewrite. This only ever triggers when there's truly no prompt text to work
+with - a row that already has one always goes through the normal text
+rewrite above, on --model or the default, unchanged.
+
 By default the final saved CSV is trimmed down to just the "Positive Prompt"
 and "Cleaned Prompt" columns, dropping File Name/File Path/Negative Prompt/
 etc. Pass -v/--verbose to keep every original column instead. Either way,
 in-progress checkpoints during a run always keep every column, so a crash
 mid-run never loses data for rows not yet processed.
 
-Requires Ollama running locally (ollama serve) with the model already pulled:
+Requires Ollama running locally (ollama serve) with both models pulled:
     ollama pull gemma4:12b
+    ollama pull huihui_ai/qwen2.5-vl-abliterated:7b
 
 Usage:
     python clean_prompts.py <path-to-csv>
@@ -23,7 +33,9 @@ Usage:
     # Process every *.csv file in the current directory instead of one file:
     python clean_prompts.py
 
-    # Use a different local Ollama model instead of the default:
+    # Use a different local Ollama model instead of the default (only
+    # affects rows that already have prompt text - see VISION_MODEL above
+    # for the no-metadata image-description fallback):
     python clean_prompts.py <path-to-csv> --model llama3.1:8b
 
     # Also submit each cleaned prompt to ComfyUI for rendering as it's cleaned.
@@ -33,6 +45,7 @@ Usage:
 """
 
 import argparse
+import base64
 import csv
 import json
 import os
@@ -46,8 +59,20 @@ from pathlib import Path
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"  # "localhost" can resolve to ::1 first and get refused if Ollama only binds IPv4
 MODEL = "gemma4:12b"
+# Vision-capable model used only as a fallback, when a row has no prompt
+# text at all to rewrite (see the module docstring) - independent of
+# --model/MODEL above, which only ever applies to the text-rewrite path.
+VISION_MODEL = "huihui_ai/qwen2.5-vl-abliterated:7b"
 PROMPT_COLUMN = "Positive Prompt"
 OUTPUT_COLUMN = "Cleaned Prompt"
+IMAGE_PATH_COLUMN = "File Path"
+# Written into PROMPT_COLUMN once the image-description fallback has run for
+# a row, in place of leaving it blank - marks that row as "described from
+# the image, not from prompt text" so a later re-run (or rerun_prompts_
+# comfyui.py reading the same CSV) recognizes it and doesn't try to feed
+# this literal string through the text-rewrite model as if it were a real
+# prompt.
+NOT_FOUND_MARKER = "not found"
 
 RERUN_SCRIPT_DIR = str(Path(__file__).resolve().parent)  # rerun_prompts_comfyui.py lives alongside this script
 DEFAULT_WORKFLOW = r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t2i.json"
@@ -76,6 +101,7 @@ def build_system_prompt():
 
 
 SYSTEM_PROMPT = build_system_prompt()
+IMAGE_DESCRIPTION_SYSTEM_PROMPT = load_text(SYSTEM_PROMPT_CONFIG_PATH, "image_description_system_prompt")
 
 # Curly/smart-typography characters the model sometimes emits despite being
 # told not to - mapped to their plain-ASCII equivalents so a bad response
@@ -137,6 +163,31 @@ def clean_prompt(positive_prompt: str, model: str = MODEL) -> str:
     return sanitize_ascii(result["response"].strip())
 
 
+def describe_image(image_path, model: str = VISION_MODEL) -> str:
+    """Ask a local vision-capable Ollama model to describe an image
+    directly - the fallback for a row with no prompt text at all to
+    rewrite (see the module docstring). image_path is read and sent as
+    base64, same request shape as clean_prompt() otherwise. A larger
+    timeout than clean_prompt()'s, since a vision model's first pass over
+    an image can take noticeably longer than a pure text rewrite."""
+    image_b64 = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+    payload = {
+        "model": model,
+        "prompt": "Describe this image.",
+        "system": IMAGE_DESCRIPTION_SYSTEM_PROMPT,
+        "images": [image_b64],
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=240) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return sanitize_ascii(result["response"].strip())
+
+
 def submit_cleaned_prompt(rerun, workflow_bundle, server, client_id, row, cleaned_text, randomize_seed):
     """Queue one cleaned prompt on ComfyUI, reusing rerun_prompts_comfyui's workflow
     builder and its keyword-based LoRA toggling."""
@@ -189,14 +240,24 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         if row.get(OUTPUT_COLUMN, "").strip() and not args.overwrite:
             continue  # already done, e.g. resuming a previous run
 
-        positive = row.get(PROMPT_COLUMN, "") or ""
-        if not positive.strip():
+        positive = (row.get(PROMPT_COLUMN, "") or "").strip()
+        image_path = row.get(IMAGE_PATH_COLUMN, "") or ""
+        # NOT_FOUND_MARKER means a prior run already tried the text prompt
+        # and found none - treat it the same as genuinely empty, not as
+        # real prompt text to run through the text-rewrite model again.
+        use_image_fallback = not positive or positive == NOT_FOUND_MARKER
+
+        if use_image_fallback and not (image_path and Path(image_path).is_file()):
             row[OUTPUT_COLUMN] = ""
             continue
 
         print(f"[{i}/{total}] {row.get('File Name', '')}")
         try:
-            row[OUTPUT_COLUMN] = clean_prompt(positive, model=args.model)
+            if use_image_fallback:
+                row[OUTPUT_COLUMN] = describe_image(image_path)
+                row[PROMPT_COLUMN] = NOT_FOUND_MARKER
+            else:
+                row[OUTPUT_COLUMN] = clean_prompt(positive, model=args.model)
             succeeded += 1
         except Exception as e:
             print(f"  error: {e}", file=sys.stderr)
@@ -232,7 +293,8 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         if failed and not succeeded:
             print(
                 f"Warning: every attempted row failed - check that Ollama is running "
-                f"({OLLAMA_URL}) and that model '{args.model}' is pulled.",
+                f"({OLLAMA_URL}) and that model '{args.model}' (and, for any image-only "
+                f"row, '{VISION_MODEL}') is pulled.",
                 file=sys.stderr,
             )
     else:

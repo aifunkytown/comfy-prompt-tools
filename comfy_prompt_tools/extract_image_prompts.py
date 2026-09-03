@@ -14,7 +14,11 @@ Prompt text exactly matches one already seen (within the same folder) is
 treated as a duplicate and skipped - only the first image using that
 prompt is written to the CSV; the Negative Prompt and other fields are
 ignored when checking for duplicates. Images with no positive prompt text
-extracted from metadata are skipped entirely and never written to the CSV.
+extracted from metadata are still written, with an empty Positive Prompt -
+this lets clean_prompts.py fall back to describing the image directly via
+a vision-capable Ollama model (using this row's File Path) instead of
+having nothing to work with at all. That empty-prompt case is never
+treated as a duplicate of another empty-prompt row.
 
 One CSV is written per folder that directly contains images, named after
 that folder (e.g. images in a folder called "2026-05-19" produce
@@ -306,12 +310,13 @@ STANDARD_FIELDNAMES = [
 
 def write_folder_csv(folder, image_paths, output_dir=None):
     """Write (or append to) <folder name>-prompts.csv, deduped within that folder on
-    Positive Prompt text; images with no positive prompt are skipped entirely. Saved
-    into output_dir if given, otherwise directly into folder itself (the directory
-    being scanned). If the CSV already exists, its rows are kept, its own column
-    layout is preserved (so extra columns like clean_prompts.py's "Cleaned Prompt"
-    survive), and its existing prompts seed the duplicate check so re-running doesn't
-    re-add images already recorded there."""
+    Positive Prompt text - an image with no positive prompt is still written, with
+    that column empty, rather than skipped (see the module docstring). Saved into
+    output_dir if given, otherwise directly into folder itself (the directory being
+    scanned). If the CSV already exists, its rows are kept, its own column layout is
+    preserved (so extra columns like clean_prompts.py's "Cleaned Prompt" survive),
+    and its existing prompts seed the duplicate check so re-running doesn't re-add
+    images already recorded there."""
     output_path = (output_dir or folder) / f"{folder.name}-prompts.csv"
     file_exists = output_path.is_file()
 
@@ -328,7 +333,7 @@ def write_folder_csv(folder, image_paths, output_dir=None):
 
     rows_written = 0
     duplicates_skipped = 0
-    no_prompt_skipped = 0
+    no_metadata_count = 0
 
     with open(output_path, "a" if file_exists else "w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
@@ -338,16 +343,15 @@ def write_folder_csv(folder, image_paths, output_dir=None):
         for image_path in image_paths:
             positive, negative, other, source_format, notes = extract_row(image_path)
 
-            if not positive.strip():
-                print(f"Skipping (no positive prompt in metadata): {image_path}")
-                no_prompt_skipped += 1
-                continue
-
-            if positive in seen_positive_prompts:
-                print(f"Skipping duplicate prompt: {image_path} (same Positive Prompt as {seen_positive_prompts[positive]})")
-                duplicates_skipped += 1
-                continue
-            seen_positive_prompts[positive] = image_path
+            if positive.strip():
+                if positive in seen_positive_prompts:
+                    print(f"Skipping duplicate prompt: {image_path} (same Positive Prompt as {seen_positive_prompts[positive]})")
+                    duplicates_skipped += 1
+                    continue
+                seen_positive_prompts[positive] = image_path
+            else:
+                print(f"No prompt metadata found, writing with an empty Positive Prompt: {image_path}")
+                no_metadata_count += 1
 
             prompt_hash = hash_prompt(positive, negative)
 
@@ -363,11 +367,12 @@ def write_folder_csv(folder, image_paths, output_dir=None):
             })
             rows_written += 1
 
-    total_scanned = rows_written + duplicates_skipped + no_prompt_skipped
+    total_scanned = rows_written + duplicates_skipped
     action = f"Appended {rows_written} new row(s) to" if file_exists else "Wrote"
     print(
-        f"{folder}: scanned {total_scanned} image(s), skipped {duplicates_skipped} duplicate(s) and "
-        f"{no_prompt_skipped} with no positive prompt. {action} {output_path}"
+        f"{folder}: scanned {total_scanned} image(s), skipped {duplicates_skipped} duplicate(s), "
+        f"{no_metadata_count} with no prompt metadata (written empty for image-based description). "
+        f"{action} {output_path}"
     )
 
 
