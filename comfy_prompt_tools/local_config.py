@@ -8,7 +8,43 @@ keyword lists, etc.) that shouldn't be in the public repo.
 """
 
 import json
+import re
+import unicodedata
 from pathlib import Path
+
+# Curly/smart-typography characters a model sometimes emits despite being
+# told not to - mapped to their plain-ASCII equivalents so a bad response
+# never makes it into a CSV even if the system prompt is ignored. Also
+# needed on Windows, independent of any CSV concern: a console using a
+# legacy codepage (cp1252) raises UnicodeEncodeError on an unmapped
+# character the moment a caller print()s it, which is worse than a lossy
+# ASCII conversion - so every model response gets sanitized before either
+# being written out or printed.
+_ASCII_REPLACEMENTS = {
+    "‘": "'", "’": "'",   # curly single quotes
+    "“": '"', "”": '"',   # curly double quotes
+    "–": "-",                   # en dash
+    "—": " - ",                 # em dash
+    "…": "...",                 # ellipsis
+    " ": " ",                   # non-breaking space
+}
+
+
+def sanitize_ascii(text: str) -> str:
+    """Force text down to plain ASCII: map common smart-typography characters
+    to their ASCII equivalents, decompose accented letters to their base form
+    (e.g. "e" -> "e"), and drop anything left that still isn't ASCII (emoji,
+    CJK, etc). Applied as a backstop after every model response, regardless
+    of what the system prompt asked for."""
+    if not text:
+        return text
+    for bad, good in _ASCII_REPLACEMENTS.items():
+        text = text.replace(bad, good)
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" +([,.;:!?])", r"\1", text)
+    return text.strip()
 
 
 def local_path_for(base_path: Path) -> Path:

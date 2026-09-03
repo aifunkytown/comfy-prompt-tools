@@ -67,7 +67,6 @@ import json
 import os
 import re
 import sys
-import unicodedata
 import urllib.error
 import urllib.request
 import uuid
@@ -95,10 +94,10 @@ DEFAULT_WORKFLOW = r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t
 DEFAULT_COMFYUI_SERVER = "http://127.0.0.1:8000"
 
 try:
-    from local_config import load_local_text, load_text  # run directly: python clean_prompts.py
+    from local_config import load_local_text, load_text, sanitize_ascii  # run directly: python clean_prompts.py
     import rate_prompts
 except ImportError:
-    from comfy_prompt_tools.local_config import load_local_text, load_text  # imported as a package
+    from comfy_prompt_tools.local_config import load_local_text, load_text, sanitize_ascii  # imported as a package
     from comfy_prompt_tools import rate_prompts
 
 RATING_COLUMN = rate_prompts.RATING_COLUMN
@@ -108,6 +107,23 @@ REASON_COLUMN = rate_prompts.REASON_COLUMN
 # rating below) - distinctive enough that it won't appear in an actual
 # prompt or description by accident.
 RATING_DELIMITER = "===RATING==="
+# Some models don't reproduce RATING_DELIMITER verbatim - e.g. a bare "==="
+# markdown-style separator on its own line, followed by "RATING | X | ..."
+# on the next, instead of one contiguous "===RATING===" token. Matched
+# case-insensitively, with the trailing "===" optional, so a real
+# delimiter-shaped line is still recognized even when a model reformats it
+# slightly - getting the rating parsed matters more than an exact-text
+# match on our own instructions.
+_RATING_DELIMITER_RE = re.compile(r"=+\s*RATING\s*=*", re.IGNORECASE)
+
+# Caps a single Ollama response - a rewritten prompt/description plus its
+# rating is never legitimately longer than this. Without a cap, a model
+# that degenerates into a repetition loop (a known local-model failure mode,
+# e.g. endlessly repeating an escalating number) keeps generating for a very
+# long time, which not only wastes that row but can push every row queued
+# behind it past its own request timeout too - one bad row otherwise stalls
+# the whole batch.
+MAX_RESPONSE_TOKENS = 500
 
 # clean_prompts.json (checked in) holds "system_prompt_base" - edit the
 # prompt there, not in code. clean_prompts.local.json next to it (gitignored,
@@ -148,34 +164,11 @@ IMAGE_DESCRIPTION_SYSTEM_PROMPT = _combined_system_prompt(
     load_text(SYSTEM_PROMPT_CONFIG_PATH, "image_description_system_prompt")
 )
 
-# Curly/smart-typography characters the model sometimes emits despite being
-# told not to - mapped to their plain-ASCII equivalents so a bad response
-# never makes it into the CSV even if the system prompt is ignored.
-_ASCII_REPLACEMENTS = {
-    "‘": "'", "’": "'",   # curly single quotes
-    "“": '"', "”": '"',   # curly double quotes
-    "–": "-",                   # en dash
-    "—": " - ",                 # em dash
-    "…": "...",                 # ellipsis
-    " ": " ",                   # non-breaking space
-}
+# sanitize_ascii moved to local_config.py - shared with rate_prompts.py,
+# which needs it too (a rating "reason" is free-form model text just like a
+# cleaned prompt, and crashes the same way printing to a Windows cp1252
+# console if left unsanitized).
 
-
-def sanitize_ascii(text: str) -> str:
-    """Force text down to plain ASCII: map common smart-typography characters
-    to their ASCII equivalents, decompose accented letters to their base form
-    (e.g. "e" -> "e"), and drop anything left that still isn't ASCII (emoji,
-    CJK, etc). Applied as a backstop after every model response, regardless
-    of what the system prompt asked for."""
-    if not text:
-        return text
-    for bad, good in _ASCII_REPLACEMENTS.items():
-        text = text.replace(bad, good)
-    text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r" +([,.;:!?])", r"\1", text)
-    return text.strip()
 
 
 def check_ollama_running(timeout=5):
@@ -191,16 +184,41 @@ def check_ollama_running(timeout=5):
         return False
 
 
+def _strip_thinking(raw_response: str) -> str:
+    """Reasoning models (e.g. huihui_ai/qwen3-abliterated) generate inside
+    a <think>...</think> block before their actual answer - Ollama's chat
+    template opens that block as part of the prompt scaffold, so the
+    opening tag itself is often never present in `response`, only the
+    model's own reasoning text followed by its closing </think>. Left
+    unstripped, that reasoning text gets treated as the cleaned prompt/
+    description itself, and RATING_DELIMITER detection below becomes
+    unreliable since the model can echo it (or its own approximation of
+    it) inside the reasoning block too. Strips a properly paired
+    <think>...</think> block if present; otherwise, if only a closing tag
+    showed up (the implicit-opening-tag case), discards everything up to
+    and including it."""
+    without_paired = re.sub(r"<think>.*?</think>\s*", "", raw_response, flags=re.DOTALL)
+    if without_paired != raw_response:
+        return without_paired
+    if "</think>" in raw_response:
+        return raw_response.rsplit("</think>", 1)[1].lstrip()
+    return raw_response
+
+
 def _split_response_and_rating(raw_response: str):
     """Splits a combined rewrite/description + rating response (see
     _combined_system_prompt) on RATING_DELIMITER into (main_text, rating,
-    reason). If the model ignored the delimiter instruction, the whole
-    response is kept as main_text and the rating comes back "UNPARSED" -
-    getting the rewritten/described text right matters more than the
-    rating succeeding, so a rating-parsing miss never costs the row its
-    actual prompt text."""
-    if RATING_DELIMITER in raw_response:
-        main_part, rating_part = raw_response.split(RATING_DELIMITER, 1)
+    reason), after stripping any reasoning-model <think> block (see
+    _strip_thinking) so leaked reasoning never lands in main_text and
+    doesn't interfere with delimiter detection. If the model ignored the
+    delimiter instruction, the whole response is kept as main_text and the
+    rating comes back "UNPARSED" - getting the rewritten/described text
+    right matters more than the rating succeeding, so a rating-parsing
+    miss never costs the row its actual prompt text."""
+    raw_response = _strip_thinking(raw_response)
+    match = _RATING_DELIMITER_RE.search(raw_response)
+    if match:
+        main_part, rating_part = raw_response[:match.start()], raw_response[match.end():]
     else:
         main_part, rating_part = raw_response, ""
 
@@ -219,6 +237,7 @@ def clean_prompt(positive_prompt: str, model: str = MODEL):
         "prompt": positive_prompt,
         "system": SYSTEM_PROMPT,
         "stream": False,
+        "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
     req = urllib.request.Request(
         OLLAMA_URL,
@@ -245,6 +264,7 @@ def describe_image(image_path, model: str = VISION_MODEL):
         "system": IMAGE_DESCRIPTION_SYSTEM_PROMPT,
         "images": [image_b64],
         "stream": False,
+        "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
     req = urllib.request.Request(
         OLLAMA_URL,

@@ -45,9 +45,9 @@ VALID_RATINGS = ("G", "PG", "PG-13", "R", "X", "XXX", "REVIEW")
 RATING_ALIASES = {r.replace("-", ""): r for r in VALID_RATINGS}
 
 try:
-    from local_config import load_text, load_local_text  # run directly: python rate_prompts.py
+    from local_config import load_text, load_local_text, sanitize_ascii  # run directly: python rate_prompts.py
 except ImportError:
-    from comfy_prompt_tools.local_config import load_text, load_local_text  # imported as a package
+    from comfy_prompt_tools.local_config import load_text, load_local_text, sanitize_ascii  # imported as a package
 
 # rate_prompts.json (checked in) holds "system_prompt_base" - edit the rubric
 # there, not in code. rate_prompts.local.json next to it (gitignored, same
@@ -80,21 +80,28 @@ def check_ollama_running(timeout=5):
 
 def parse_rating_response(text: str):
     """Split the model's 'RATING | reason' response into (rating, reason).
-    Falls back to rating="UNPARSED" (with the full raw response as the
-    reason, so nothing is silently lost) if the rating isn't one of
-    VALID_RATINGS once normalized (case, spacing, and hyphen-insensitive)."""
+    Some models echo the literal word "RATING" as a label before the
+    actual grade instead of substituting it (e.g. "RATING | X | reason",
+    or truncated mid-response as just "RATING | X" with no reason at
+    all) - scanning every '|'-separated segment for the first one that's
+    a valid rating (rather than assuming it's always the first segment)
+    handles that label-echo case for free, while an unlabeled "X | reason"
+    still matches on its first segment exactly as before. Falls back to
+    rating="UNPARSED" (with the full raw response as the reason, so
+    nothing is silently lost) if no segment normalizes to one of
+    VALID_RATINGS (case, spacing, and hyphen-insensitive). The reason is
+    free-form model text just like a cleaned prompt, and needs the same
+    sanitize_ascii backstop - left as-is, a smart quote or similar in it
+    crashes the moment a Windows cp1252 console tries to print it."""
     text = text.strip()
-    if "|" in text:
-        rating_part, reason = text.split("|", 1)
-        reason = reason.strip()
-    else:
-        rating_part, reason = text, ""
-
-    normalized = rating_part.strip().upper().replace(" ", "").replace(".", "").replace("-", "")
-    rating = RATING_ALIASES.get(normalized)
-    if rating is None:
-        return "UNPARSED", text
-    return rating, reason
+    parts = text.split("|")
+    for i, part in enumerate(parts):
+        normalized = part.strip().upper().replace(" ", "").replace(".", "").replace("-", "")
+        rating = RATING_ALIASES.get(normalized)
+        if rating is not None:
+            reason = sanitize_ascii("|".join(parts[i + 1:]).strip())
+            return rating, reason
+    return "UNPARSED", sanitize_ascii(text)
 
 
 def get_input_text(row) -> str:
