@@ -41,13 +41,31 @@ pass the equivalent CLI flag, where available) to point at your own setup.
 
 - **`extract_image_prompts.py`** - Scans a directory (recursively) for images
   and pulls the embedded generation prompt out of each one's metadata
-  (ComfyUI, Automatic1111, or EXIF UserComment), writing one
-  `<folder>-prompts.csv` per folder of images. Dedupes on exact `Positive
+  (ComfyUI, Automatic1111, SwarmUI, InvokeAI, or EXIF UserComment), writing
+  one `<folder>-prompts.csv` per folder of images. SwarmUI writes its
+  metadata into the same PNG "parameters" chunk A1111 uses, but as JSON -
+  detected by content (a "sui_image_params" key), not assumed from the
+  chunk name, so it's tried first and only falls through to plain A1111
+  parsing when that JSON shape isn't present. Dedupes on exact `Positive
   Prompt` text within a folder; an image with no positive prompt metadata is
   still written, with that column empty and `File Path` pointing at the
   image - `clean_prompts.py` and `rerun_prompts_comfyui.py` both fall back to
   describing that image directly via a vision model instead of having
   nothing to work with (see each below).
+
+- **`fix_swarmui_prompts.py`** - One-time repair for CSVs extracted *before*
+  `extract_image_prompts.py` learned to recognize SwarmUI's format - those
+  rows have the raw, unparsed SwarmUI JSON blob sitting in `Positive Prompt`
+  instead of the actual prompt text. Finds rows in that shape and replaces
+  `Positive Prompt`/`Negative Prompt`/`Other Parameters`/`Source Format`
+  with the correctly extracted values (recomputing the prompt hash too);
+  any stale `Cleaned Prompt` generated from the broken input is cleared so
+  `clean_prompts.py` picks the row back up automatically next run, no
+  `--overwrite` needed. Rows not in that shape are left completely
+  untouched. `--move-to <path>` instead pulls fixed rows out of their
+  source CSV entirely and collects them into one destination CSV, for
+  isolating exactly the rows that need re-cleaning without disturbing the
+  rest of a source file.
 
 ### Cleaning / rewriting
 

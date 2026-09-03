@@ -5,6 +5,10 @@ generation prompts embedded in their metadata into a CSV file.
 Supports:
   - ComfyUI PNGs (embedded "prompt" API-graph JSON in the PNG text chunks)
   - Automatic1111 / A1111-style PNGs (embedded "parameters" text chunk)
+  - SwarmUI PNGs (also embedded in the "parameters" chunk, but as JSON - a
+    "sui_image_params"/"sui_extra_data"/"sui_models" object rather than
+    A1111's plain-text block; detected by content, not assumed from the
+    chunk name)
   - InvokeAI PNGs (embedded "invokeai_metadata" JSON text chunk)
   - JPEG/WEBP images that carry the same info via EXIF UserComment
 
@@ -176,6 +180,44 @@ def parse_a1111_parameters(params_text):
     return positive.strip(), negative.strip(), other.strip()
 
 
+def parse_swarmui_metadata(params_text):
+    """Parse a SwarmUI 'parameters' JSON blob (a "sui_image_params" /
+    "sui_extra_data" / "sui_models" object) into (positive, negative, other).
+    SwarmUI writes its metadata into the same PNG "parameters" text chunk
+    A1111 uses, so this has to be tried and rejected by content (valid JSON
+    with a "sui_image_params" key) rather than assumed from the chunk name -
+    returns None for anything that isn't that, including plain A1111 text."""
+    try:
+        data = json.loads(params_text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or "sui_image_params" not in data:
+        return None
+
+    image_params = data.get("sui_image_params") or {}
+    positive = (image_params.get("prompt") or "").strip()
+    negative = (image_params.get("negativeprompt") or "").strip()
+
+    other_parts = []
+    if image_params.get("steps") is not None:
+        other_parts.append(f"Steps: {image_params['steps']}")
+    if image_params.get("sampler"):
+        other_parts.append(f"Sampler: {image_params['sampler']}")
+    if image_params.get("cfgscale") is not None:
+        other_parts.append(f"CFG scale: {image_params['cfgscale']}")
+    if image_params.get("seed") is not None:
+        other_parts.append(f"Seed: {image_params['seed']}")
+    if image_params.get("width") and image_params.get("height"):
+        other_parts.append(f"Size: {image_params['width']}x{image_params['height']}")
+    if image_params.get("model"):
+        other_parts.append(f"Model: {image_params['model']}")
+    if image_params.get("swarm_version"):
+        other_parts.append(f"SwarmUI version: {image_params['swarm_version']}")
+    other = ", ".join(other_parts)
+
+    return positive, negative, other
+
+
 def parse_invokeai_metadata(metadata_json_text):
     """Parse InvokeAI's flat 'invokeai_metadata' JSON into (positive, negative, other)."""
     data = json.loads(metadata_json_text)
@@ -269,9 +311,15 @@ def extract_row(image_path):
                     fallback_note = f"Failed to parse ComfyUI prompt JSON: {e}"
 
             if "parameters" in info:
-                positive, negative, other = parse_a1111_parameters(info["parameters"])
-                if positive.strip():
-                    return positive, negative, other, "A1111", ""
+                swarmui = parse_swarmui_metadata(info["parameters"])
+                if swarmui:
+                    positive, negative, other = swarmui
+                    if positive.strip():
+                        return positive, negative, other, "SwarmUI", ""
+                else:
+                    positive, negative, other = parse_a1111_parameters(info["parameters"])
+                    if positive.strip():
+                        return positive, negative, other, "A1111", ""
 
             if "invokeai_metadata" in info:
                 try:
@@ -289,6 +337,11 @@ def extract_row(image_path):
                         return positive, negative or "", "", "ComfyUI (EXIF)", ""
                 except Exception:
                     pass
+                swarmui = parse_swarmui_metadata(comment)
+                if swarmui:
+                    positive, negative, other = swarmui
+                    if positive.strip():
+                        return positive, negative, other, "SwarmUI (EXIF)", ""
                 if "Negative prompt:" in comment or "Steps:" in comment:
                     positive, negative, other = parse_a1111_parameters(comment)
                     if positive.strip():
