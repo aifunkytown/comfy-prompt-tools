@@ -53,6 +53,11 @@ Usage:
     # Keyword-matched LoRAs are turned on automatically, same as
     # rerun_prompts_comfyui.py (see its LORA_RULES):
     python clean_prompts.py <path-to-csv> --submit-to-comfyui --workflow <workflow.json>
+
+Also exposes a run(config_path) entry point (same JSON-config convention as
+run_test.py/lora_test.py/generate_prompt_variations.py/rerun_prompts_
+comfyui.py/extract_and_clean.py) for driving this programmatically without
+argparse - used by funkytown-testing-harness-gui's Generations tab.
 """
 
 import argparse
@@ -392,6 +397,35 @@ def clean_all(csv_paths, submit_to_comfyui=False, workflow=DEFAULT_WORKFLOW, ser
     for csv_path in csv_paths:
         print(f"=== {csv_path} ===")
         process_csv(csv_path, args, rerun, workflow_bundle, client_id)
+
+
+def run(config_path):
+    """JSON-config-driven entry point, same convention as run_test.py/
+    lora_test.py/generate_prompt_variations.py/rerun_prompts_comfyui.py/
+    extract_and_clean.py - a caller like the GUI can drive this without
+    going through argparse. Config file format:
+        {
+            "csv_paths": ["...", "..."],
+            "model": "...",              // optional
+            "overwrite": false,          // optional
+            "verbose": false,            // optional
+            "submit_to_comfyui": false,  // optional
+            "workflow": "...",           // optional, required if submit_to_comfyui
+            "server": "...",             // optional
+            "random_seed": false         // optional
+        }
+    """
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    clean_all(
+        csv_paths=config["csv_paths"],
+        submit_to_comfyui=config.get("submit_to_comfyui", False),
+        workflow=config.get("workflow", DEFAULT_WORKFLOW),
+        server=config.get("server", DEFAULT_COMFYUI_SERVER),
+        random_seed=config.get("random_seed", False),
+        overwrite=config.get("overwrite", False),
+        verbose=config.get("verbose", False),
+        model=config.get("model", MODEL),
+    )
 
 
 def main():

@@ -89,7 +89,11 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   likewise split base/local - both the text-rewrite prompt and the
   image-description prompt live in `clean_prompts.json` (checked in, edit
   them there rather than in code), and `clean_prompts.local.json` next to it
-  can append personal instructions onto the text-rewrite one.
+  can append personal instructions onto the text-rewrite one. Also exposes
+  a `run(config_path)` entry point (same JSON-config convention as
+  `run_test.py`/`lora_test.py`/`generate_prompt_variations.py`/
+  `rerun_prompts_comfyui.py`/`extract_and_clean.py`) - used by
+  `funkytown-testing-harness-gui`'s Generations tab.
 
 - **`rate_prompts.py`** - Content-rates a prompt CSV on a movie-style scale
   (`G`/`PG`/`PG-13`/`R`/`X`/`XXX`, or `REVIEW` for suspected underage
