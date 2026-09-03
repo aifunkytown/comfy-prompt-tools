@@ -34,16 +34,82 @@ Usage:
 
 Requires: everything extract_image_prompts.py and clean_prompts.py each
 require - Pillow, and Ollama running locally with the model pulled.
+
+Also exposes a run(config_path) entry point (same JSON-config convention as
+run_test.py/lora_test.py/generate_prompt_variations.py/rerun_prompts_
+comfyui.py) for driving this programmatically without argparse - used by
+funkytown-testing-harness-gui's Generations tab.
 """
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 try:
     import clean_prompts
     import extract_image_prompts
 except ImportError:
     from comfy_prompt_tools import clean_prompts, extract_image_prompts
+
+
+def run_all(directory, output_dir=None, submit_to_comfyui=False, workflow=clean_prompts.DEFAULT_WORKFLOW,
+            server=clean_prompts.DEFAULT_COMFYUI_SERVER, random_seed=False, overwrite=False, verbose=False,
+            model=clean_prompts.MODEL):
+    """Core logic behind main() and run() below - callable directly by other
+    callers (e.g. the GUI) without going through argparse or a JSON file."""
+    if not clean_prompts.check_ollama_running():
+        sys.exit(
+            f"Error: Ollama doesn't appear to be reachable at {clean_prompts.OLLAMA_URL} - "
+            f"start it with `ollama serve` (and make sure the model is pulled: "
+            f"`ollama pull {model}`), then try again."
+        )
+
+    csv_paths = extract_image_prompts.extract_all(directory, output_dir)
+    if not csv_paths:
+        return  # extract_all() already printed why (no images found)
+
+    clean_prompts.clean_all(
+        [str(p) for p in csv_paths],
+        submit_to_comfyui=submit_to_comfyui,
+        workflow=workflow,
+        server=server,
+        random_seed=random_seed,
+        overwrite=overwrite,
+        verbose=verbose,
+        model=model,
+    )
+
+
+def run(config_path):
+    """JSON-config-driven entry point, same convention as run_test.run()/
+    lora_test.run()/generate_prompt_variations.run()/rerun_prompts_comfyui.run()
+    - a caller like the GUI can drive this without going through argparse.
+    Config file format:
+        {
+            "directory": "...",
+            "output_dir": "...",        // optional
+            "model": "...",              // optional
+            "overwrite": false,          // optional
+            "verbose": false,            // optional
+            "submit_to_comfyui": false,  // optional
+            "workflow": "...",           // optional, required if submit_to_comfyui
+            "server": "...",             // optional
+            "random_seed": false         // optional
+        }
+    """
+    config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    run_all(
+        directory=config["directory"],
+        output_dir=config.get("output_dir"),
+        submit_to_comfyui=config.get("submit_to_comfyui", False),
+        workflow=config.get("workflow", clean_prompts.DEFAULT_WORKFLOW),
+        server=config.get("server", clean_prompts.DEFAULT_COMFYUI_SERVER),
+        random_seed=config.get("random_seed", False),
+        overwrite=config.get("overwrite", False),
+        verbose=config.get("verbose", False),
+        model=config.get("model", clean_prompts.MODEL),
+    )
 
 
 def main():
@@ -74,19 +140,9 @@ def main():
                          help=f"Ollama model to use (default: {clean_prompts.MODEL})")
     args = parser.parse_args()
 
-    if not clean_prompts.check_ollama_running():
-        sys.exit(
-            f"Error: Ollama doesn't appear to be reachable at {clean_prompts.OLLAMA_URL} - "
-            f"start it with `ollama serve` (and make sure the model is pulled: "
-            f"`ollama pull {args.model}`), then try again."
-        )
-
-    csv_paths = extract_image_prompts.extract_all(args.directory, args.output_dir)
-    if not csv_paths:
-        return  # extract_all() already printed why (no images found)
-
-    clean_prompts.clean_all(
-        [str(p) for p in csv_paths],
+    run_all(
+        directory=args.directory,
+        output_dir=args.output_dir,
         submit_to_comfyui=args.submit_to_comfyui,
         workflow=args.workflow,
         server=args.server,

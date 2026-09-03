@@ -112,7 +112,10 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   extracting for nothing when cleaning would fail row-by-row anyway). Every
   `clean_prompts.py` option (`--overwrite`, `-v`/`--verbose`, `--model`,
   `--submit-to-comfyui`, `--workflow`, `--server`, `--random-seed`) is
-  accepted and passed straight through.
+  accepted and passed straight through. Also exposes a `run(config_path)`
+  entry point (same JSON-config convention as `run_test.py`/`lora_test.py`/
+  `generate_prompt_variations.py`/`rerun_prompts_comfyui.py`) - used by
+  `funkytown-testing-harness-gui`'s Generations tab.
 
 - **`generate_prompt_variations.py`** - Takes one row of a prompt CSV and asks
   Ollama to generate variations that change a specific described aspect (e.g.
