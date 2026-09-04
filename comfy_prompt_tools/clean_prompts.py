@@ -155,22 +155,33 @@ STYLE_PLACEHOLDER = "{STYLE}"
 DEFAULT_STYLE_CONFIG_PATH = Path(__file__).resolve().parent / "style_realism.json"
 
 
+def resolve_style_adds(style_config=None):
+    """style_config's "style_adds" text (default: DEFAULT_STYLE_CONFIG_PATH,
+    i.e. realism), with <style_config>.local.json's own "style_adds" - if
+    present - appended after it, same base+local pattern as a prompt
+    config's addendum (just simple appending here, since a style's adds
+    are a single self-contained instruction rather than a structured
+    prompt with its own #OUTPUT: section to insert before)."""
+    style_config = Path(style_config) if style_config else DEFAULT_STYLE_CONFIG_PATH
+    base = load_text(style_config, "style_adds")
+    local = load_local_text(style_config, "style_adds")
+    return f"{base} {local}" if local else base
+
+
 def build_system_prompt(config_path=None, style_config=None):
     """The base prompt (default: clean_prompts.json) is SFW - the age-safety
     clause in it stays baked in unconditionally, a guardrail rather than
     something droppable. If the base text contains STYLE_PLACEHOLDER, it's
-    replaced first with style_config's "style_adds" text (default:
-    DEFAULT_STYLE_CONFIG_PATH, i.e. realism) - done before the addendum
-    step below since the placeholder lives inside the body, not at the
-    end. <config_path>.local.json's addendum, if present, is then inserted
-    just before a structured config's "#OUTPUT:" section (so it reads as
-    more response guidelines, not a trailing afterthought) or appended
-    as-is for an unstructured one."""
+    replaced first with resolve_style_adds(style_config) (default: realism)
+    - done before the addendum step below since the placeholder lives
+    inside the body, not at the end. <config_path>.local.json's addendum,
+    if present, is then inserted just before a structured config's
+    "#OUTPUT:" section (so it reads as more response guidelines, not a
+    trailing afterthought) or appended as-is for an unstructured one."""
     config_path = Path(config_path) if config_path else SYSTEM_PROMPT_CONFIG_PATH
     base = load_text(config_path, "system_prompt_base")
     if STYLE_PLACEHOLDER in base:
-        style_config = Path(style_config) if style_config else DEFAULT_STYLE_CONFIG_PATH
-        base = base.replace(STYLE_PLACEHOLDER, load_text(style_config, "style_adds"))
+        base = base.replace(STYLE_PLACEHOLDER, resolve_style_adds(style_config))
     addendum = load_local_text(config_path, "system_prompt_addendum")
     if not addendum:
         return base
@@ -221,8 +232,7 @@ def resolve_system_prompts(config_path=None, combine_rating=True, style_config=N
     base = build_system_prompt(config_path, style_config)
     image_base = load_text(config_path, "image_description_system_prompt")
     if STYLE_PLACEHOLDER in image_base:
-        style_path = Path(style_config) if style_config else DEFAULT_STYLE_CONFIG_PATH
-        image_base = image_base.replace(STYLE_PLACEHOLDER, load_text(style_path, "style_adds"))
+        image_base = image_base.replace(STYLE_PLACEHOLDER, resolve_style_adds(style_config))
     if not combine_rating:
         return base, image_base
     return _combined_system_prompt(base), _combined_system_prompt(image_base)
