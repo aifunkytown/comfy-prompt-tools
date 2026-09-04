@@ -55,7 +55,7 @@ except ImportError:
 
 def run_all(directory, output_dir=None, submit_to_comfyui=False, workflow=clean_prompts.DEFAULT_WORKFLOW,
             server=clean_prompts.DEFAULT_COMFYUI_SERVER, random_seed=False, overwrite=False, verbose=False,
-            model=clean_prompts.MODEL, prompt_config=None):
+            model=clean_prompts.MODEL, prompt_config=None, style_config=None):
     """Core logic behind main() and run() below - callable directly by other
     callers (e.g. the GUI) without going through argparse or a JSON file."""
     if not clean_prompts.check_ollama_running():
@@ -79,6 +79,7 @@ def run_all(directory, output_dir=None, submit_to_comfyui=False, workflow=clean_
         verbose=verbose,
         model=model,
         prompt_config=prompt_config,
+        style_config=style_config,
     )
 
 
@@ -92,6 +93,7 @@ def run(config_path):
             "output_dir": "...",        // optional
             "model": "...",              // optional
             "prompt_config": "...",      // optional - see clean_prompts.run()'s config docstring
+            "style_config": "...",       // optional - see clean_prompts.run()'s config docstring
             "overwrite": false,          // optional
             "verbose": false,            // optional
             "submit_to_comfyui": false,  // optional
@@ -112,6 +114,7 @@ def run(config_path):
         verbose=config.get("verbose", False),
         model=config.get("model", clean_prompts.MODEL),
         prompt_config=config.get("prompt_config"),
+        style_config=config.get("style_config"),
     )
 
 
@@ -144,6 +147,8 @@ def main():
     parser.add_argument("--prompt-config", default=None,
                          help="Path to a <name>.json prompt-directions config - see clean_prompts.py's own "
                               "--prompt-config help for details")
+    parser.add_argument("--style-config", default=None,
+                         help="Path to a style_<name>.json - see clean_prompts.py's own --style-config help for details")
     args = parser.parse_args()
 
     run_all(
@@ -157,6 +162,7 @@ def main():
         verbose=args.verbose,
         model=args.model,
         prompt_config=args.prompt_config,
+        style_config=args.style_config,
     )
 
 

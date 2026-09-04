@@ -140,16 +140,48 @@ SYSTEM_PROMPT_CONFIG_PATH = Path(__file__).resolve().parent / "clean_prompts.jso
 # style) just gets the addendum appended at the end, as before.
 _OUTPUT_SECTION_HEADER = "#OUTPUT:"
 
+# A prompt config's base text can include this literal token wherever it
+# wants the currently-selected visual style's instructions substituted in
+# - see clean_prompts_qwen.json, which has this in place of what used to
+# be a hardcoded "write only realistic photos" guideline. A config with no
+# placeholder (e.g. the default clean_prompts.json) is simply unaffected -
+# not every model config needs to support style-swapping. See
+# style_realism.json/style_anime.json/style_oil_painting.json for the
+# style side of this - --style-config (CLI) / style_config (clean_all()/
+# run()) picks which one, defaulting to style_realism.json so a config
+# using the placeholder keeps its original (realistic) behavior unless a
+# different style is explicitly chosen.
+STYLE_PLACEHOLDER = "{STYLE}"
+DEFAULT_STYLE_CONFIG_PATH = Path(__file__).resolve().parent / "style_realism.json"
 
-def build_system_prompt(config_path=None):
+
+def resolve_style_adds(style_config=None):
+    """style_config's "style_adds" text (default: DEFAULT_STYLE_CONFIG_PATH,
+    i.e. realism), with <style_config>.local.json's own "style_adds" - if
+    present - appended after it, same base+local pattern as a prompt
+    config's addendum (just simple appending here, since a style's adds
+    are a single self-contained instruction rather than a structured
+    prompt with its own #OUTPUT: section to insert before)."""
+    style_config = Path(style_config) if style_config else DEFAULT_STYLE_CONFIG_PATH
+    base = load_text(style_config, "style_adds")
+    local = load_local_text(style_config, "style_adds")
+    return f"{base} {local}" if local else base
+
+
+def build_system_prompt(config_path=None, style_config=None):
     """The base prompt (default: clean_prompts.json) is SFW - the age-safety
     clause in it stays baked in unconditionally, a guardrail rather than
-    something droppable. <config_path>.local.json's addendum, if present, is
-    inserted just before a structured config's "#OUTPUT:" section (so it
-    reads as more response guidelines, not a trailing afterthought) or
-    appended as-is for an unstructured one."""
+    something droppable. If the base text contains STYLE_PLACEHOLDER, it's
+    replaced first with resolve_style_adds(style_config) (default: realism)
+    - done before the addendum step below since the placeholder lives
+    inside the body, not at the end. <config_path>.local.json's addendum,
+    if present, is then inserted just before a structured config's
+    "#OUTPUT:" section (so it reads as more response guidelines, not a
+    trailing afterthought) or appended as-is for an unstructured one."""
     config_path = Path(config_path) if config_path else SYSTEM_PROMPT_CONFIG_PATH
     base = load_text(config_path, "system_prompt_base")
+    if STYLE_PLACEHOLDER in base:
+        base = base.replace(STYLE_PLACEHOLDER, resolve_style_adds(style_config))
     addendum = load_local_text(config_path, "system_prompt_addendum")
     if not addendum:
         return base
@@ -176,7 +208,7 @@ def _combined_system_prompt(base_prompt: str) -> str:
     )
 
 
-def resolve_system_prompts(config_path=None, combine_rating=True):
+def resolve_system_prompts(config_path=None, combine_rating=True, style_config=None):
     """(system_prompt, image_description_system_prompt) for a given prompt
     config file (default: SYSTEM_PROMPT_CONFIG_PATH). clean_all()/run() call
     this once per invocation instead of relying on the module-level
@@ -185,6 +217,11 @@ def resolve_system_prompts(config_path=None, combine_rating=True):
     default for direct clean_prompt()/describe_image() calls (tests, a
     script run directly) that don't pass their own system_prompt.
 
+    style_config: path to a style_<name>.json (default: realism) - only
+    has any effect on a config_path whose base text contains
+    STYLE_PLACEHOLDER; see build_system_prompt(). image_base can use the
+    placeholder too, in principle, though none of the shipped configs do.
+
     combine_rating=False skips appending rate_prompts.py's rubric, for a
     rewrite-only pass ahead of a separate rate_prompts.py pass (e.g. for a
     model that skips the rewrite half when asked to do both in one
@@ -192,8 +229,10 @@ def resolve_system_prompts(config_path=None, combine_rating=True):
     rating was actually requested" check already keys off RATING_DELIMITER
     being absent from the result, so this needs no other special-casing."""
     config_path = Path(config_path) if config_path else SYSTEM_PROMPT_CONFIG_PATH
-    base = build_system_prompt(config_path)
+    base = build_system_prompt(config_path, style_config)
     image_base = load_text(config_path, "image_description_system_prompt")
+    if STYLE_PLACEHOLDER in image_base:
+        image_base = image_base.replace(STYLE_PLACEHOLDER, resolve_style_adds(style_config))
     if not combine_rating:
         return base, image_base
     return _combined_system_prompt(base), _combined_system_prompt(image_base)
@@ -432,20 +471,22 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt
 
 def clean_all(csv_paths, submit_to_comfyui=False, workflow=DEFAULT_WORKFLOW, server=DEFAULT_COMFYUI_SERVER,
               random_seed=False, overwrite=False, verbose=False, model=MODEL, prompt_config=None,
-              combine_rating=True):
+              combine_rating=True, style_config=None):
     """Core logic behind main() - process an explicit list of CSV paths
     without going through argparse. Callable directly by other scripts
     (e.g. extract_and_clean.py). prompt_config: path to a <name>.json prompt
     config (default: clean_prompts.json, i.e. SYSTEM_PROMPT_CONFIG_PATH) -
     see clean_prompts_qwen.json for an example of a second one, for a model
-    that needs differently-worded directions. combine_rating=False runs a
-    rewrite-only pass (no rating rubric appended) - see
-    resolve_system_prompts()."""
+    that needs differently-worded directions. style_config: path to a
+    style_<name>.json (default: style_realism.json) - only affects a
+    prompt_config whose base text opts in via STYLE_PLACEHOLDER; see
+    build_system_prompt(). combine_rating=False runs a rewrite-only pass
+    (no rating rubric appended) - see resolve_system_prompts()."""
     args = argparse.Namespace(
         submit_to_comfyui=submit_to_comfyui, workflow=workflow, server=server,
         random_seed=random_seed, overwrite=overwrite, verbose=verbose, model=model,
     )
-    system_prompt, image_system_prompt = resolve_system_prompts(prompt_config, combine_rating)
+    system_prompt, image_system_prompt = resolve_system_prompts(prompt_config, combine_rating, style_config)
 
     rerun = workflow_bundle = client_id = None
     if submit_to_comfyui:
@@ -472,6 +513,10 @@ def run(config_path):
             "prompt_config": "...",      // optional - path to a <name>.json prompt
                                           //   config (default: clean_prompts.json);
                                           //   see clean_prompts_qwen.json
+            "style_config": "...",       // optional - path to a style_<name>.json
+                                          //   (default: style_realism.json); only
+                                          //   affects a prompt_config that opts in
+                                          //   via {STYLE} in its base text
             "combine_rating": true,      // optional - false for a rewrite-only pass
                                           //   (no rating rubric appended), ahead of a
                                           //   separate rate_prompts.py pass
@@ -495,6 +540,7 @@ def run(config_path):
         model=config.get("model", MODEL),
         prompt_config=config.get("prompt_config"),
         combine_rating=config.get("combine_rating", True),
+        style_config=config.get("style_config"),
     )
 
 
@@ -518,6 +564,11 @@ def main():
                               f"as the default (default: {SYSTEM_PROMPT_CONFIG_PATH.name}) - use this to give a "
                               "different model (e.g. a reasoning model that needs more explicit structure) its own "
                               "wording without touching the default file. See clean_prompts_qwen.json for an example.")
+    parser.add_argument("--style-config", default=None,
+                         help=f"Path to a style_<name>.json (default: {DEFAULT_STYLE_CONFIG_PATH.name}) - only has "
+                              "an effect on a --prompt-config whose base text opts in via a {STYLE} placeholder "
+                              "(see clean_prompts_qwen.json). Swaps the requested visual style (realism, anime, "
+                              "oil painting, ...) without editing the prompt config itself.")
     parser.add_argument("--rewrite-only", action="store_true",
                          help="Don't append the rating rubric to the system prompt - useful ahead of a separate "
                               "rate_prompts.py pass, for a model that skips the rewrite when asked to do both at once")
@@ -538,7 +589,7 @@ def main():
         csv_paths,
         submit_to_comfyui=args.submit_to_comfyui, workflow=args.workflow, server=args.server,
         random_seed=args.random_seed, overwrite=args.overwrite, verbose=args.verbose, model=args.model,
-        prompt_config=args.prompt_config, combine_rating=not args.rewrite_only,
+        prompt_config=args.prompt_config, combine_rating=not args.rewrite_only, style_config=args.style_config,
     )
 
 
