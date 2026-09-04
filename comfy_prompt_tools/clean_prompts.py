@@ -324,7 +324,14 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
                 row[PROMPT_COLUMN] = NOT_FOUND_MARKER
             else:
                 row[OUTPUT_COLUMN], row[RATING_COLUMN], row[REASON_COLUMN] = clean_prompt(positive, model=args.model)
-            print(f"  Rating: {row[RATING_COLUMN]} - {row[REASON_COLUMN]}")
+            # A caller can swap SYSTEM_PROMPT for the plain build_system_prompt()
+            # base (no rating rubric appended) to run a rewrite-only pass ahead
+            # of a separate rate_prompts.py pass - every row then comes back
+            # "UNPARSED - no rating delimiter found in response" by design, not
+            # as a per-row failure, so printing it as if it were one is just
+            # noise in that mode.
+            if RATING_DELIMITER in SYSTEM_PROMPT:
+                print(f"  Rating: {row[RATING_COLUMN]} - {row[REASON_COLUMN]}")
             succeeded += 1
         except Exception as e:
             print(f"  error: {e}", file=sys.stderr)
