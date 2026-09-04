@@ -94,10 +94,14 @@ DEFAULT_WORKFLOW = r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t
 DEFAULT_COMFYUI_SERVER = "http://127.0.0.1:8000"
 
 try:
-    from local_config import load_local_text, load_text, sanitize_ascii  # run directly: python clean_prompts.py
+    from local_config import (  # run directly: python clean_prompts.py
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_local_text, load_text, sanitize_ascii, strip_thinking,
+    )
     import rate_prompts
 except ImportError:
-    from comfy_prompt_tools.local_config import load_local_text, load_text, sanitize_ascii  # imported as a package
+    from comfy_prompt_tools.local_config import (  # imported as a package
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_local_text, load_text, sanitize_ascii, strip_thinking,
+    )
     from comfy_prompt_tools import rate_prompts
 
 RATING_COLUMN = rate_prompts.RATING_COLUMN
@@ -116,30 +120,43 @@ RATING_DELIMITER = "===RATING==="
 # match on our own instructions.
 _RATING_DELIMITER_RE = re.compile(r"=+\s*RATING\s*=*", re.IGNORECASE)
 
-# Caps a single Ollama response - a rewritten prompt/description plus its
-# rating is never legitimately longer than this. Without a cap, a model
-# that degenerates into a repetition loop (a known local-model failure mode,
-# e.g. endlessly repeating an escalating number) keeps generating for a very
-# long time, which not only wastes that row but can push every row queued
-# behind it past its own request timeout too - one bad row otherwise stalls
-# the whole batch.
-MAX_RESPONSE_TOKENS = 500
-
 # clean_prompts.json (checked in) holds "system_prompt_base" - edit the
 # prompt there, not in code. clean_prompts.local.json next to it (gitignored,
 # same base+local pattern as everywhere else in this project) can add
-# personal instructions on top via a "system_prompt_addendum" string.
+# personal instructions on top via a "system_prompt_addendum" string. This is
+# just the default - --prompt-config (CLI) / prompt_config (clean_all()/
+# run()) points at a different <name>.json (+ optional <name>.local.json)
+# instead, so a model that needs differently-worded directions (e.g. a
+# reasoning model that responds better to an explicitly structured prompt)
+# can have its own file without touching this one - see
+# clean_prompts_qwen.json for an example.
 SYSTEM_PROMPT_CONFIG_PATH = Path(__file__).resolve().parent / "clean_prompts.json"
+# A structured prompt config (see clean_prompts_qwen.json) ends its base
+# text with this section header, right before where the model's answer is
+# meant to begin - inserting an addendum there (as further response
+# guidelines) keeps it a coherent part of the instructions instead of
+# trailing after the model's told the task is already fully specified. An
+# unstructured base (no such header - clean_prompts.json's plain-paragraph
+# style) just gets the addendum appended at the end, as before.
+_OUTPUT_SECTION_HEADER = "#OUTPUT:"
 
 
-def build_system_prompt():
-    """The base prompt (clean_prompts.json) is SFW - the age-safety clause
-    in it stays baked in unconditionally, a guardrail rather than something
-    droppable. clean_prompts.local.json's addendum, if present, is appended
-    as-is."""
-    base = load_text(SYSTEM_PROMPT_CONFIG_PATH, "system_prompt_base")
-    addendum = load_local_text(SYSTEM_PROMPT_CONFIG_PATH, "system_prompt_addendum")
-    return base + " " + addendum if addendum else base
+def build_system_prompt(config_path=None):
+    """The base prompt (default: clean_prompts.json) is SFW - the age-safety
+    clause in it stays baked in unconditionally, a guardrail rather than
+    something droppable. <config_path>.local.json's addendum, if present, is
+    inserted just before a structured config's "#OUTPUT:" section (so it
+    reads as more response guidelines, not a trailing afterthought) or
+    appended as-is for an unstructured one."""
+    config_path = Path(config_path) if config_path else SYSTEM_PROMPT_CONFIG_PATH
+    base = load_text(config_path, "system_prompt_base")
+    addendum = load_local_text(config_path, "system_prompt_addendum")
+    if not addendum:
+        return base
+    if _OUTPUT_SECTION_HEADER in base:
+        before, after = base.split(_OUTPUT_SECTION_HEADER, 1)
+        return f"{before.rstrip()}\n{addendum}\n\n{_OUTPUT_SECTION_HEADER}{after}"
+    return base + " " + addendum
 
 
 def _combined_system_prompt(base_prompt: str) -> str:
@@ -159,10 +176,30 @@ def _combined_system_prompt(base_prompt: str) -> str:
     )
 
 
-SYSTEM_PROMPT = _combined_system_prompt(build_system_prompt())
-IMAGE_DESCRIPTION_SYSTEM_PROMPT = _combined_system_prompt(
-    load_text(SYSTEM_PROMPT_CONFIG_PATH, "image_description_system_prompt")
-)
+def resolve_system_prompts(config_path=None, combine_rating=True):
+    """(system_prompt, image_description_system_prompt) for a given prompt
+    config file (default: SYSTEM_PROMPT_CONFIG_PATH). clean_all()/run() call
+    this once per invocation instead of relying on the module-level
+    SYSTEM_PROMPT/IMAGE_DESCRIPTION_SYSTEM_PROMPT globals below, so
+    --prompt-config actually takes effect - those globals stay only as the
+    default for direct clean_prompt()/describe_image() calls (tests, a
+    script run directly) that don't pass their own system_prompt.
+
+    combine_rating=False skips appending rate_prompts.py's rubric, for a
+    rewrite-only pass ahead of a separate rate_prompts.py pass (e.g. for a
+    model that skips the rewrite half when asked to do both in one
+    response) - process_csv()'s own "only print the Rating: line when a
+    rating was actually requested" check already keys off RATING_DELIMITER
+    being absent from the result, so this needs no other special-casing."""
+    config_path = Path(config_path) if config_path else SYSTEM_PROMPT_CONFIG_PATH
+    base = build_system_prompt(config_path)
+    image_base = load_text(config_path, "image_description_system_prompt")
+    if not combine_rating:
+        return base, image_base
+    return _combined_system_prompt(base), _combined_system_prompt(image_base)
+
+
+SYSTEM_PROMPT, IMAGE_DESCRIPTION_SYSTEM_PROMPT = resolve_system_prompts()
 
 # sanitize_ascii moved to local_config.py - shared with rate_prompts.py,
 # which needs it too (a rating "reason" is free-form model text just like a
@@ -184,38 +221,20 @@ def check_ollama_running(timeout=5):
         return False
 
 
-def _strip_thinking(raw_response: str) -> str:
-    """Reasoning models (e.g. huihui_ai/qwen3-abliterated) generate inside
-    a <think>...</think> block before their actual answer - Ollama's chat
-    template opens that block as part of the prompt scaffold, so the
-    opening tag itself is often never present in `response`, only the
-    model's own reasoning text followed by its closing </think>. Left
-    unstripped, that reasoning text gets treated as the cleaned prompt/
-    description itself, and RATING_DELIMITER detection below becomes
-    unreliable since the model can echo it (or its own approximation of
-    it) inside the reasoning block too. Strips a properly paired
-    <think>...</think> block if present; otherwise, if only a closing tag
-    showed up (the implicit-opening-tag case), discards everything up to
-    and including it."""
-    without_paired = re.sub(r"<think>.*?</think>\s*", "", raw_response, flags=re.DOTALL)
-    if without_paired != raw_response:
-        return without_paired
-    if "</think>" in raw_response:
-        return raw_response.rsplit("</think>", 1)[1].lstrip()
-    return raw_response
+
 
 
 def _split_response_and_rating(raw_response: str):
     """Splits a combined rewrite/description + rating response (see
     _combined_system_prompt) on RATING_DELIMITER into (main_text, rating,
     reason), after stripping any reasoning-model <think> block (see
-    _strip_thinking) so leaked reasoning never lands in main_text and
-    doesn't interfere with delimiter detection. If the model ignored the
-    delimiter instruction, the whole response is kept as main_text and the
-    rating comes back "UNPARSED" - getting the rewritten/described text
-    right matters more than the rating succeeding, so a rating-parsing
-    miss never costs the row its actual prompt text."""
-    raw_response = _strip_thinking(raw_response)
+    local_config.strip_thinking) so leaked reasoning never lands in
+    main_text and doesn't interfere with delimiter detection. If the model
+    ignored the delimiter instruction, the whole response is kept as
+    main_text and the rating comes back "UNPARSED" - getting the rewritten/
+    described text right matters more than the rating succeeding, so a
+    rating-parsing miss never costs the row its actual prompt text."""
+    raw_response = strip_thinking(raw_response)
     match = _RATING_DELIMITER_RE.search(raw_response)
     if match:
         main_part, rating_part = raw_response[:match.start()], raw_response[match.end():]
@@ -230,12 +249,15 @@ def _split_response_and_rating(raw_response: str):
     return main_text, rating, reason
 
 
-def clean_prompt(positive_prompt: str, model: str = MODEL):
-    """Returns (cleaned_text, rating, reason) - see _split_response_and_rating."""
+def clean_prompt(positive_prompt: str, model: str = MODEL, system_prompt: str = None):
+    """Returns (cleaned_text, rating, reason) - see _split_response_and_rating.
+    system_prompt defaults to the module-level SYSTEM_PROMPT (built from
+    SYSTEM_PROMPT_CONFIG_PATH) - process_csv()/clean_all() pass their own,
+    resolved from --prompt-config, instead of relying on that default."""
     payload = {
         "model": model,
         "prompt": positive_prompt,
-        "system": SYSTEM_PROMPT,
+        "system": system_prompt if system_prompt is not None else SYSTEM_PROMPT,
         "stream": False,
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
@@ -244,24 +266,26 @@ def clean_prompt(positive_prompt: str, model: str = MODEL):
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return _split_response_and_rating(result["response"])
 
 
-def describe_image(image_path, model: str = VISION_MODEL):
+def describe_image(image_path, model: str = VISION_MODEL, system_prompt: str = None):
     """Ask a local vision-capable Ollama model to describe an image
     directly - the fallback for a row with no prompt text at all to
     rewrite (see the module docstring). Returns (description, rating,
     reason), same as clean_prompt(). image_path is read and sent as
     base64, same request shape as clean_prompt() otherwise. A larger
     timeout than clean_prompt()'s, since a vision model's first pass over
-    an image can take noticeably longer than a pure text rewrite."""
+    an image can take noticeably longer than a pure text rewrite.
+    system_prompt defaults to the module-level IMAGE_DESCRIPTION_SYSTEM_PROMPT,
+    same override convention as clean_prompt()."""
     image_b64 = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
     payload = {
         "model": model,
         "prompt": "Describe this image.",
-        "system": IMAGE_DESCRIPTION_SYSTEM_PROMPT,
+        "system": system_prompt if system_prompt is not None else IMAGE_DESCRIPTION_SYSTEM_PROMPT,
         "images": [image_b64],
         "stream": False,
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
@@ -271,7 +295,7 @@ def describe_image(image_path, model: str = VISION_MODEL):
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=240) as resp:
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS + 60) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return _split_response_and_rating(result["response"])
 
@@ -305,7 +329,7 @@ def submit_cleaned_prompt(rerun, workflow_bundle, server, client_id, row, cleane
         print(f"  queued in ComfyUI as prompt_id={result.get('prompt_id')} (LoRAs: {lora_summary})")
 
 
-def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
+def process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt, image_system_prompt):
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fieldnames = list(reader.fieldnames or [])
@@ -343,11 +367,22 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
         print(f"[{i}/{total}] {row.get('File Name', '')}")
         try:
             if use_image_fallback:
-                row[OUTPUT_COLUMN], row[RATING_COLUMN], row[REASON_COLUMN] = describe_image(image_path)
+                row[OUTPUT_COLUMN], row[RATING_COLUMN], row[REASON_COLUMN] = describe_image(
+                    image_path, system_prompt=image_system_prompt,
+                )
                 row[PROMPT_COLUMN] = NOT_FOUND_MARKER
             else:
-                row[OUTPUT_COLUMN], row[RATING_COLUMN], row[REASON_COLUMN] = clean_prompt(positive, model=args.model)
-            print(f"  Rating: {row[RATING_COLUMN]} - {row[REASON_COLUMN]}")
+                row[OUTPUT_COLUMN], row[RATING_COLUMN], row[REASON_COLUMN] = clean_prompt(
+                    positive, model=args.model, system_prompt=system_prompt,
+                )
+            # A caller can pass a system_prompt built from the plain
+            # build_system_prompt() base (no rating rubric appended) to run a
+            # rewrite-only pass ahead of a separate rate_prompts.py pass -
+            # every row then comes back "UNPARSED - no rating delimiter found
+            # in response" by design, not as a per-row failure, so printing it
+            # as if it were one is just noise in that mode.
+            if RATING_DELIMITER in system_prompt:
+                print(f"  Rating: {row[RATING_COLUMN]} - {row[REASON_COLUMN]}")
             succeeded += 1
         except Exception as e:
             print(f"  error: {e}", file=sys.stderr)
@@ -396,14 +431,21 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id):
 
 
 def clean_all(csv_paths, submit_to_comfyui=False, workflow=DEFAULT_WORKFLOW, server=DEFAULT_COMFYUI_SERVER,
-              random_seed=False, overwrite=False, verbose=False, model=MODEL):
+              random_seed=False, overwrite=False, verbose=False, model=MODEL, prompt_config=None,
+              combine_rating=True):
     """Core logic behind main() - process an explicit list of CSV paths
     without going through argparse. Callable directly by other scripts
-    (e.g. extract_and_clean.py)."""
+    (e.g. extract_and_clean.py). prompt_config: path to a <name>.json prompt
+    config (default: clean_prompts.json, i.e. SYSTEM_PROMPT_CONFIG_PATH) -
+    see clean_prompts_qwen.json for an example of a second one, for a model
+    that needs differently-worded directions. combine_rating=False runs a
+    rewrite-only pass (no rating rubric appended) - see
+    resolve_system_prompts()."""
     args = argparse.Namespace(
         submit_to_comfyui=submit_to_comfyui, workflow=workflow, server=server,
         random_seed=random_seed, overwrite=overwrite, verbose=verbose, model=model,
     )
+    system_prompt, image_system_prompt = resolve_system_prompts(prompt_config, combine_rating)
 
     rerun = workflow_bundle = client_id = None
     if submit_to_comfyui:
@@ -416,7 +458,7 @@ def clean_all(csv_paths, submit_to_comfyui=False, workflow=DEFAULT_WORKFLOW, ser
 
     for csv_path in csv_paths:
         print(f"=== {csv_path} ===")
-        process_csv(csv_path, args, rerun, workflow_bundle, client_id)
+        process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt, image_system_prompt)
 
 
 def run(config_path):
@@ -427,6 +469,12 @@ def run(config_path):
         {
             "csv_paths": ["...", "..."],
             "model": "...",              // optional
+            "prompt_config": "...",      // optional - path to a <name>.json prompt
+                                          //   config (default: clean_prompts.json);
+                                          //   see clean_prompts_qwen.json
+            "combine_rating": true,      // optional - false for a rewrite-only pass
+                                          //   (no rating rubric appended), ahead of a
+                                          //   separate rate_prompts.py pass
             "overwrite": false,          // optional
             "verbose": false,            // optional
             "submit_to_comfyui": false,  // optional
@@ -445,6 +493,8 @@ def run(config_path):
         overwrite=config.get("overwrite", False),
         verbose=config.get("verbose", False),
         model=config.get("model", MODEL),
+        prompt_config=config.get("prompt_config"),
+        combine_rating=config.get("combine_rating", True),
     )
 
 
@@ -463,6 +513,14 @@ def main():
     parser.add_argument("--overwrite", action="store_true",
                          help="Reprocess rows that already have a Cleaned Prompt value (default: skip them)")
     parser.add_argument("--model", default=MODEL, help=f"Ollama model to use (default: {MODEL})")
+    parser.add_argument("--prompt-config", default=None,
+                         help="Path to a <name>.json prompt-directions config, base+local-overridable the same way "
+                              f"as the default (default: {SYSTEM_PROMPT_CONFIG_PATH.name}) - use this to give a "
+                              "different model (e.g. a reasoning model that needs more explicit structure) its own "
+                              "wording without touching the default file. See clean_prompts_qwen.json for an example.")
+    parser.add_argument("--rewrite-only", action="store_true",
+                         help="Don't append the rating rubric to the system prompt - useful ahead of a separate "
+                              "rate_prompts.py pass, for a model that skips the rewrite when asked to do both at once")
     parser.add_argument("-v", "--verbose", action="store_true",
                          help="Keep every original column in the saved CSV (default: trim the final output down to just "
                               f"'{PROMPT_COLUMN}', '{OUTPUT_COLUMN}', '{RATING_COLUMN}', and '{REASON_COLUMN}')")
@@ -480,6 +538,7 @@ def main():
         csv_paths,
         submit_to_comfyui=args.submit_to_comfyui, workflow=args.workflow, server=args.server,
         random_seed=args.random_seed, overwrite=args.overwrite, verbose=args.verbose, model=args.model,
+        prompt_config=args.prompt_config, combine_rating=not args.rewrite_only,
     )
 
 

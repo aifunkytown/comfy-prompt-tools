@@ -45,9 +45,13 @@ VALID_RATINGS = ("G", "PG", "PG-13", "R", "X", "XXX", "REVIEW")
 RATING_ALIASES = {r.replace("-", ""): r for r in VALID_RATINGS}
 
 try:
-    from local_config import load_text, load_local_text, sanitize_ascii  # run directly: python rate_prompts.py
+    from local_config import (  # run directly: python rate_prompts.py
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_text, load_local_text, sanitize_ascii, strip_thinking,
+    )
 except ImportError:
-    from comfy_prompt_tools.local_config import load_text, load_local_text, sanitize_ascii  # imported as a package
+    from comfy_prompt_tools.local_config import (  # imported as a package
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_text, load_local_text, sanitize_ascii, strip_thinking,
+    )
 
 # rate_prompts.json (checked in) holds "system_prompt_base" - edit the rubric
 # there, not in code. rate_prompts.local.json next to it (gitignored, same
@@ -80,20 +84,27 @@ def check_ollama_running(timeout=5):
 
 def parse_rating_response(text: str):
     """Split the model's 'RATING | reason' response into (rating, reason).
-    Some models echo the literal word "RATING" as a label before the
-    actual grade instead of substituting it (e.g. "RATING | X | reason",
-    or truncated mid-response as just "RATING | X" with no reason at
-    all) - scanning every '|'-separated segment for the first one that's
-    a valid rating (rather than assuming it's always the first segment)
-    handles that label-echo case for free, while an unlabeled "X | reason"
-    still matches on its first segment exactly as before. Falls back to
-    rating="UNPARSED" (with the full raw response as the reason, so
-    nothing is silently lost) if no segment normalizes to one of
-    VALID_RATINGS (case, spacing, and hyphen-insensitive). The reason is
-    free-form model text just like a cleaned prompt, and needs the same
-    sanitize_ascii backstop - left as-is, a smart quote or similar in it
-    crashes the moment a Windows cp1252 console tries to print it."""
-    text = text.strip()
+    First strips a reasoning-model <think> block (see
+    local_config.strip_thinking) - beyond keeping raw reasoning out of the
+    reason field, this matters for correctness here specifically: a
+    reasoning model often muses over several candidate ratings by name
+    before settling on its actual answer, and since every '|'-separated
+    segment gets scanned below, an unstripped think block risks matching
+    one of those musings instead of the real, final rating. Some models
+    also echo the literal word "RATING" as a label before the actual grade
+    instead of substituting it (e.g. "RATING | X | reason", or truncated
+    mid-response as just "RATING | X" with no reason at all) - scanning
+    every '|'-separated segment for the first one that's a valid rating
+    (rather than assuming it's always the first segment) handles that
+    label-echo case for free, while an unlabeled "X | reason" still
+    matches on its first segment exactly as before. Falls back to
+    rating="UNPARSED" (with the full response as the reason, so nothing is
+    silently lost) if no segment normalizes to one of VALID_RATINGS (case,
+    spacing, and hyphen-insensitive). The reason is free-form model text
+    just like a cleaned prompt, and needs the same sanitize_ascii backstop
+    - left as-is, a smart quote or similar in it crashes the moment a
+    Windows cp1252 console tries to print it."""
+    text = strip_thinking(text.strip()).strip()
     parts = text.split("|")
     for i, part in enumerate(parts):
         normalized = part.strip().upper().replace(" ", "").replace(".", "").replace("-", "")
@@ -115,13 +126,14 @@ def rate_prompt(text: str, model: str = MODEL):
         "prompt": text,
         "system": SYSTEM_PROMPT,
         "stream": False,
+        "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
     req = urllib.request.Request(
         OLLAMA_URL,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return parse_rating_response(result["response"])
 

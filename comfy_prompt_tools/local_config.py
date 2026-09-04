@@ -47,6 +47,46 @@ def sanitize_ascii(text: str) -> str:
     return text.strip()
 
 
+# Caps a single Ollama response - shared by clean_prompts.py and
+# rate_prompts.py so neither script can be stalled by a degenerate
+# repetition loop (a known local-model failure mode, e.g. endlessly
+# repeating an escalating number). Without a cap, one bad row keeps
+# generating for a very long time, which can push every row queued behind
+# it past its own request timeout too - one bad row otherwise stalls the
+# whole batch.
+MAX_RESPONSE_TOKENS = 500
+
+# How long a single Ollama request is allowed to run before urlopen gives
+# up. Sized for MAX_RESPONSE_TOKENS's default of 500 - a caller that raises
+# MAX_RESPONSE_TOKENS (e.g. for a reasoning model whose <think> block eats
+# into the same budget) needs to raise this too, or a response that is
+# genuinely still generating - not stuck - gets killed and logged as a
+# timeout error before it ever finishes.
+REQUEST_TIMEOUT_SECONDS = 180
+
+
+def strip_thinking(raw_response: str) -> str:
+    """Reasoning models (e.g. huihui_ai/qwen3-abliterated) generate inside
+    a <think>...</think> block before their actual answer - Ollama's chat
+    template opens that block as part of the prompt scaffold, so the
+    opening tag itself is often never present in `response`, only the
+    model's own reasoning text followed by its closing </think>. Left
+    unstripped, that reasoning text gets treated as the real answer itself
+    (a cleaned prompt, or - for rate_prompts.py - a rating), and can also
+    derail delimiter/rating-token detection downstream, e.g. by mentioning
+    a valid rating word while merely musing over candidates before
+    reaching its actual conclusion. Strips a properly paired
+    <think>...</think> block if present; otherwise, if only a closing tag
+    showed up (the implicit-opening-tag case), discards everything up to
+    and including it."""
+    without_paired = re.sub(r"<think>.*?</think>\s*", "", raw_response, flags=re.DOTALL)
+    if without_paired != raw_response:
+        return without_paired
+    if "</think>" in raw_response:
+        return raw_response.rsplit("</think>", 1)[1].lstrip()
+    return raw_response
+
+
 def local_path_for(base_path: Path) -> Path:
     return base_path.with_name(base_path.stem + ".local" + base_path.suffix)
 
