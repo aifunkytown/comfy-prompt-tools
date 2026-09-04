@@ -94,10 +94,14 @@ DEFAULT_WORKFLOW = r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t
 DEFAULT_COMFYUI_SERVER = "http://127.0.0.1:8000"
 
 try:
-    from local_config import load_local_text, load_text, sanitize_ascii  # run directly: python clean_prompts.py
+    from local_config import (  # run directly: python clean_prompts.py
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_local_text, load_text, sanitize_ascii, strip_thinking,
+    )
     import rate_prompts
 except ImportError:
-    from comfy_prompt_tools.local_config import load_local_text, load_text, sanitize_ascii  # imported as a package
+    from comfy_prompt_tools.local_config import (  # imported as a package
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_local_text, load_text, sanitize_ascii, strip_thinking,
+    )
     from comfy_prompt_tools import rate_prompts
 
 RATING_COLUMN = rate_prompts.RATING_COLUMN
@@ -115,15 +119,6 @@ RATING_DELIMITER = "===RATING==="
 # slightly - getting the rating parsed matters more than an exact-text
 # match on our own instructions.
 _RATING_DELIMITER_RE = re.compile(r"=+\s*RATING\s*=*", re.IGNORECASE)
-
-# Caps a single Ollama response - a rewritten prompt/description plus its
-# rating is never legitimately longer than this. Without a cap, a model
-# that degenerates into a repetition loop (a known local-model failure mode,
-# e.g. endlessly repeating an escalating number) keeps generating for a very
-# long time, which not only wastes that row but can push every row queued
-# behind it past its own request timeout too - one bad row otherwise stalls
-# the whole batch.
-MAX_RESPONSE_TOKENS = 500
 
 # clean_prompts.json (checked in) holds "system_prompt_base" - edit the
 # prompt there, not in code. clean_prompts.local.json next to it (gitignored,
@@ -184,38 +179,20 @@ def check_ollama_running(timeout=5):
         return False
 
 
-def _strip_thinking(raw_response: str) -> str:
-    """Reasoning models (e.g. huihui_ai/qwen3-abliterated) generate inside
-    a <think>...</think> block before their actual answer - Ollama's chat
-    template opens that block as part of the prompt scaffold, so the
-    opening tag itself is often never present in `response`, only the
-    model's own reasoning text followed by its closing </think>. Left
-    unstripped, that reasoning text gets treated as the cleaned prompt/
-    description itself, and RATING_DELIMITER detection below becomes
-    unreliable since the model can echo it (or its own approximation of
-    it) inside the reasoning block too. Strips a properly paired
-    <think>...</think> block if present; otherwise, if only a closing tag
-    showed up (the implicit-opening-tag case), discards everything up to
-    and including it."""
-    without_paired = re.sub(r"<think>.*?</think>\s*", "", raw_response, flags=re.DOTALL)
-    if without_paired != raw_response:
-        return without_paired
-    if "</think>" in raw_response:
-        return raw_response.rsplit("</think>", 1)[1].lstrip()
-    return raw_response
+
 
 
 def _split_response_and_rating(raw_response: str):
     """Splits a combined rewrite/description + rating response (see
     _combined_system_prompt) on RATING_DELIMITER into (main_text, rating,
     reason), after stripping any reasoning-model <think> block (see
-    _strip_thinking) so leaked reasoning never lands in main_text and
-    doesn't interfere with delimiter detection. If the model ignored the
-    delimiter instruction, the whole response is kept as main_text and the
-    rating comes back "UNPARSED" - getting the rewritten/described text
-    right matters more than the rating succeeding, so a rating-parsing
-    miss never costs the row its actual prompt text."""
-    raw_response = _strip_thinking(raw_response)
+    local_config.strip_thinking) so leaked reasoning never lands in
+    main_text and doesn't interfere with delimiter detection. If the model
+    ignored the delimiter instruction, the whole response is kept as
+    main_text and the rating comes back "UNPARSED" - getting the rewritten/
+    described text right matters more than the rating succeeding, so a
+    rating-parsing miss never costs the row its actual prompt text."""
+    raw_response = strip_thinking(raw_response)
     match = _RATING_DELIMITER_RE.search(raw_response)
     if match:
         main_part, rating_part = raw_response[:match.start()], raw_response[match.end():]
@@ -244,7 +221,7 @@ def clean_prompt(positive_prompt: str, model: str = MODEL):
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return _split_response_and_rating(result["response"])
 
@@ -271,7 +248,7 @@ def describe_image(image_path, model: str = VISION_MODEL):
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=240) as resp:
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS + 60) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return _split_response_and_rating(result["response"])
 
