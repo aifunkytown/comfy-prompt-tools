@@ -172,15 +172,19 @@ pass the equivalent CLI flag, where available) to point at your own setup.
 - **`combine_small_csvs.py`** - Merges CSVs with fewer than 30 rows together
   (pooled regardless of date adjacency) into combined files named after the
   newest file in each group.
-- **`sort_prompts_by_category.py`** - Combines every CSV in the output folder
-  into category files (`animal.csv` / `general_solo.csv` / `general_group.csv`
-  by default) based on keywords and estimated subject count. The keyword
-  lists live in `category_keywords.json` next to the script, not in the
-  script itself - add a gitignored `category_keywords.local.json` next to it
-  for personal categories/keyword overrides (same pattern as Claude Code's
-  `settings.local.json`; `local_config.py` implements it and is reused by
-  `rerun_prompts_comfyui.py`'s `lora_rules.json`/`lora_rules.local.json` and
-  `clean_prompts.py`'s `clean_prompts.local.json`).
+- **`sort_prompts_by_category.py`** - Combines every CSV in a given directory
+  (current directory by default; pass a directory and optionally
+  `--output-dir` to use different source/output locations) into category
+  files (`animal.csv` / `general_solo.csv` / `general_group.csv` by default)
+  based on keywords and estimated subject count. Re-running it merges newly
+  sorted rows into each category file's existing content rather than
+  overwriting it. The keyword lists live in `category_keywords.json` next to
+  the script, not in the script itself - add a gitignored
+  `category_keywords.local.json` next to it for personal categories/keyword
+  overrides (same pattern as Claude Code's `settings.local.json`;
+  `local_config.py` implements it and is reused by `rerun_prompts_comfyui.py`'s
+  `lora_rules.json`/`lora_rules.local.json` and `clean_prompts.py`'s
+  `clean_prompts.local.json`).
 
 Run any script with `--help` for its full argument list.
 
