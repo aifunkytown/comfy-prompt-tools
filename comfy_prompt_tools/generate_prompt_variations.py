@@ -529,7 +529,7 @@ def _extract_variations_list(response_text):
     return variations
 
 
-def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DEFAULT_MODEL, vocab_path=None, random_aspects=None, prompt_overrides=None):
+def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DEFAULT_MODEL, vocab_path=None, random_aspects=None, prompt_overrides=None, aspect_values=None):
     """Core logic shared by the CLI (main()) and anything else driving this
     programmatically (e.g. the GUI's Variations tab, via run() below).
     csv_path is a Path, row_numbers a list of 1-indexed ints - not required
@@ -539,11 +539,24 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
     prompt_overrides is an optional {row_num: text} map - when a row_num is
     present, its text replaces that row's own Positive/Cleaned Prompt as the
     original prompt to vary, while every other column (File Name, Negative
-    Prompt, etc.) still comes from the CSV row as usual. Raises SystemExit
-    on unrecoverable errors, same convention as run_test.py/lora_test.py."""
+    Prompt, etc.) still comes from the CSV row as usual. aspect_values is an
+    optional {aspect name (any case): [subset of values]} map - every vocab-
+    controlled aspect only ever reads its allowed values back out of the
+    `vocab` dict built here (never straight from the file again), so
+    narrowing an entry in it before anything else runs is enough to
+    restrict that aspect to just those values for this run, without
+    touching the vocab file itself. Only narrows an aspect the vocab file
+    already defines - it's not a way to invent a new one (silently
+    ignored if the name doesn't match an existing vocab key). Raises
+    SystemExit on unrecoverable errors, same convention as run_test.py/
+    lora_test.py."""
     vocab_path = vocab_path or DEFAULT_VOCAB_PATH
     prompt_overrides = prompt_overrides or {}
     vocab, random_exclude, multi_select, explicit_aspects = load_vocab(vocab_path)
+    for name, values in (aspect_values or {}).items():
+        key = str(name).strip().lower()
+        if key in vocab:
+            vocab[key] = list(values)
 
     if random_aspects is not None and aspect:
         print("Error: provide either an aspect or random_aspects, not both", file=sys.stderr)
@@ -757,7 +770,11 @@ def run(config_path):
             "model": "gemma4:12b",                      // optional
             "vocab_path": "...",                        // optional
             "output": "...",                            // optional, single-row only
-            "prompt_overrides": {"100": "a new prompt for row 100"}  // optional
+            "prompt_overrides": {"100": "a new prompt for row 100"},  // optional
+            "aspect_values": {"hair color": ["red", "blue"]}  // optional - narrows a
+                                                              //   vocab-controlled aspect
+                                                              //   to just these values
+                                                              //   for this run
         }
     "rows" takes precedence over "row" if both are present.
     """
@@ -776,6 +793,7 @@ def run(config_path):
         vocab_path=config.get("vocab_path") or DEFAULT_VOCAB_PATH,
         random_aspects=config.get("random_aspects"),
         prompt_overrides={int(k): v for k, v in config.get("prompt_overrides", {}).items()},
+        aspect_values=config.get("aspect_values"),
     )
 
 
