@@ -5,7 +5,11 @@ subject count found in the "Cleaned Prompt" column of each row - then
 further splits each category by Content Rating (see rate_prompts.py) into
 one file per rating tier: <category>_g.csv, <category>_pg13.csv (PG and
 PG-13 share a tier), <category>_r.csv, and <category>_x.csv (X and XXX
-share a tier). Sorting always happens category first, then rating.
+share a tier). Sorting always happens category first, then rating. A
+tier/category/needs_review file is only ever written if it has at least
+one row - an empty file with just a header isn't created, and one left
+over from an earlier run that's now empty (e.g. its last row got re-routed
+elsewhere) is removed instead of left stale.
 
 futa is the one exception - it's always explicit content, so a rating
 split wouldn't distinguish anything useful there, and it's kept as a
@@ -246,6 +250,22 @@ def write_csv(path: Path, fieldnames, rows):
         writer.writerows(rows)
 
 
+def write_or_remove_csv(path: Path, fieldnames, rows):
+    """Writes path only if there's at least one row - an empty category/
+    tier/needs-review file (header only, no data) isn't useful to have
+    sitting around, and clutters a directory that's mostly going to have
+    several always-empty tier combinations (e.g. a category with no G-rated
+    content at all). If rows is empty but a file is already there from an
+    earlier run that did have content, it's removed rather than left
+    stale."""
+    if rows:
+        write_csv(path, fieldnames, rows)
+        return True
+    if path.is_file():
+        path.unlink()
+    return False
+
+
 def load_existing_category_rows(category, output_dir):
     """All rows already sorted into `category`'s existing output file(s):
     its per-rating-tier files (or, for futa, its one flat file), plus a
@@ -427,16 +447,18 @@ def run(directory=".", output_dir=None):
 
         legacy_flat = output_dir / f"{category}.csv"
         if category == FUTA_CATEGORY:
-            write_csv(output_dir / "futa.csv", fieldnames, normal_rows)
-            print(f"futa.csv: {len(normal_rows)} rows")
+            wrote = write_or_remove_csv(output_dir / "futa.csv", fieldnames, normal_rows)
+            if wrote:
+                print(f"futa.csv: {len(normal_rows)} rows")
         else:
             if legacy_flat.is_file():
                 legacy_flat.unlink()
                 print(f"Removed legacy {category}.csv (content now split by rating into {category}_<tier>.csv files)")
             for tier in RATING_TIERS:
                 out_path = output_dir / f"{category}_{tier}.csv"
-                write_csv(out_path, fieldnames, tier_groups[tier])
-                print(f"{category}_{tier}.csv: {len(tier_groups[tier])} rows")
+                wrote = write_or_remove_csv(out_path, fieldnames, tier_groups[tier])
+                if wrote:
+                    print(f"{category}_{tier}.csv: {len(tier_groups[tier])} rows")
 
         for row in flagged_rows:
             row_copy = dict(row)
@@ -444,8 +466,9 @@ def run(directory=".", output_dir=None):
             all_flagged_rows.append(row_copy)
 
     needs_review_fieldnames = fieldnames + [SORT_CATEGORY_COLUMN]
-    write_csv(output_dir / NEEDS_REVIEW_FILE, needs_review_fieldnames, all_flagged_rows)
-    print(f"{NEEDS_REVIEW_FILE}: {len(all_flagged_rows)} rows")
+    wrote = write_or_remove_csv(output_dir / NEEDS_REVIEW_FILE, needs_review_fieldnames, all_flagged_rows)
+    if wrote:
+        print(f"{NEEDS_REVIEW_FILE}: {len(all_flagged_rows)} rows")
 
     print(f"Skipped {duplicates_skipped} duplicate row(s) across all categories.")
     print(f"Skipped {uncleaned_skipped} row(s) with no Cleaned Prompt yet (run clean_prompts.py first, then re-run this).")
