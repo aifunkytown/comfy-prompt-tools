@@ -120,7 +120,7 @@ def get_input_text(row) -> str:
     return cleaned or (row.get("Positive Prompt") or "").strip()
 
 
-def rate_prompt(text: str, model: str = MODEL):
+def _rate_prompt_once(text: str, model: str):
     payload = {
         "model": model,
         "prompt": text,
@@ -144,6 +144,23 @@ def rate_prompt(text: str, model: str = MODEL):
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return parse_rating_response(result["response"])
+
+
+def rate_prompt(text: str, model: str = MODEL, attempts: int = 3):
+    """Rate text, retrying if the model's response doesn't parse into one of
+    VALID_RATINGS. Some models (gemma4-heretic in particular) intermittently
+    echo the literal word "RATING" as a label without ever substituting the
+    actual grade (e.g. "RATING | reason" instead of "X | reason") - a
+    resampled request often gets a well-formed response on the next try, so
+    it's worth a few attempts before falling back to UNPARSED for good."""
+    rating, reason = "UNPARSED", ""
+    for attempt in range(1, attempts + 1):
+        rating, reason = _rate_prompt_once(text, model)
+        if rating != "UNPARSED":
+            return rating, reason
+        if attempt < attempts:
+            print(f"  UNPARSED response, retrying ({attempt}/{attempts})...", file=sys.stderr)
+    return rating, reason
 
 
 def process_csv(csv_path, args):
