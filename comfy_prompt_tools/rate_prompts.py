@@ -14,6 +14,18 @@ Content Rating is "UNPARSED" (the model's response didn't parse into a valid
 rating) are always retried on a re-run, --overwrite or not, since UNPARSED
 isn't a real rating to begin with.
 
+A model occasionally leaks its base model's built-in safety refusal through
+despite being an "abliterated"/uncensored fine-tune (observed verbatim from
+gemma4-heretic: "I cannot fulfill this request. I am prohibited from
+generating or rewriting content that contains sexually explicit material,
+including descriptions of genitalia and pornographic acts."). This is
+retried once immediately; if it persists, the row is marked "ERROR" instead
+of "UNPARSED" - unlike UNPARSED, ERROR is permanent and is never retried by
+this script again, --overwrite included, since a genuine refusal won't be
+fixed by trying again later. A row whose Cleaned Prompt is itself "ERROR"
+(clean_prompts.py hit the same refusal) is marked ERROR here too without
+spending an Ollama call on it.
+
 The rubric lives in rate_prompts.json (checked in, edit it there rather than
 in code); rate_prompts.local.json next to it can append personal instructions
 via a "system_prompt_addendum" string, same pattern as clean_prompts.py.
@@ -53,11 +65,13 @@ RATING_ALIASES = {r.replace("-", ""): r for r in VALID_RATINGS}
 
 try:
     from local_config import (  # run directly: python rate_prompts.py
-        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_text, load_local_text, sanitize_ascii, strip_thinking,
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, is_refusal_response,
+        load_text, load_local_text, sanitize_ascii, strip_thinking,
     )
 except ImportError:
     from comfy_prompt_tools.local_config import (  # imported as a package
-        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_text, load_local_text, sanitize_ascii, strip_thinking,
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, is_refusal_response,
+        load_text, load_local_text, sanitize_ascii, strip_thinking,
     )
 
 # rate_prompts.json (checked in) holds "system_prompt_base" - edit the rubric
@@ -127,6 +141,17 @@ def get_input_text(row) -> str:
     return cleaned or (row.get("Positive Prompt") or "").strip()
 
 
+def _post_ollama(payload):
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return result["response"]
+
+
 def _rate_prompt_once(text: str, model: str):
     payload = {
         "model": model,
@@ -143,14 +168,18 @@ def _rate_prompt_once(text: str, model: str):
         "think": False,
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-    return parse_rating_response(result["response"])
+    raw_response = _post_ollama(payload)
+    if is_refusal_response(raw_response):
+        # The base model's safety filter leaking through an "abliterated"
+        # fine-tune (see local_config.is_refusal_response) - a resampled
+        # request often gets past it, but this is a distinct, permanent
+        # failure mode from a merely-malformed response, so it gets exactly
+        # one retry here rather than rate_prompt()'s full UNPARSED budget.
+        print("  refusal detected, retrying once...", file=sys.stderr)
+        raw_response = _post_ollama(payload)
+        if is_refusal_response(raw_response):
+            return "ERROR", "Model refused twice (safety filter leaking through)"
+    return parse_rating_response(raw_response)
 
 
 def rate_prompt(text: str, model: str = MODEL, attempts: int = 3):
@@ -159,10 +188,16 @@ def rate_prompt(text: str, model: str = MODEL, attempts: int = 3):
     echo the literal word "RATING" as a label without ever substituting the
     actual grade (e.g. "RATING | reason" instead of "X | reason") - a
     resampled request often gets a well-formed response on the next try, so
-    it's worth a few attempts before falling back to UNPARSED for good."""
+    it's worth a few attempts before falling back to UNPARSED for good.
+    A rating of "ERROR" (see _rate_prompt_once) is a permanent failure, not
+    a transient one - it's returned immediately, without spending the rest
+    of the UNPARSED retry budget on a refusal that already survived its own
+    dedicated retry."""
     rating, reason = "UNPARSED", ""
     for attempt in range(1, attempts + 1):
         rating, reason = _rate_prompt_once(text, model)
+        if rating == "ERROR":
+            return rating, reason
         if rating != "UNPARSED":
             return rating, reason
         if attempt < attempts:
@@ -192,6 +227,10 @@ def process_csv(csv_path, args):
 
     for i, row in enumerate(rows, 1):
         existing_rating = row.get(RATING_COLUMN, "").strip()
+        # ERROR is permanent (a refusal that survived its own dedicated
+        # retry in _rate_prompt_once) - never retried, --overwrite or not.
+        if existing_rating == "ERROR":
+            continue
         # UNPARSED isn't a real rating, just a record that the model's
         # response didn't parse - always worth another shot on a re-run,
         # same as rate_prompt()'s own in-request retries above, without
@@ -203,6 +242,12 @@ def process_csv(csv_path, args):
         if not text:
             row[RATING_COLUMN] = ""
             row[REASON_COLUMN] = ""
+            continue
+        if text == "ERROR":
+            # clean_prompts.py's own permanent refusal marker - there's no
+            # real text here to rate, and it's not worth an Ollama call.
+            row[RATING_COLUMN] = "ERROR"
+            row[REASON_COLUMN] = "Cleaned Prompt is a permanent ERROR marker - nothing to rate"
             continue
 
         print(f"[{i}/{total}] {row.get('File Name', '')}")
