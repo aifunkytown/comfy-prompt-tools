@@ -1,7 +1,8 @@
 """
-Combines every *.csv file directly under F:\\Programs\\ComfyFiles\\output into
-category files, based on keyword categories and subject count found in the
-"Positive Prompt" (and "Cleaned Prompt", if present) column of each row.
+Combines every *.csv file directly under a given directory (the current
+directory by default) into category files, based on keyword categories and
+subject count found in the "Positive Prompt" (and "Cleaned Prompt", if
+present) column of each row.
 
 The keyword categories themselves (which words trigger which category) live
 in category_keywords.json next to this script, not in this file - see that
@@ -31,18 +32,33 @@ deletion is not automatic; remove the originals yourself once you've verified
 the output files). rerun_log.csv and the output files themselves are always
 excluded from the source scan.
 
+Each category's existing <category>.csv, if any, is loaded first and its rows
+carried forward - a re-run only ever *adds* newly-sorted rows into the
+category files (subject to the same per-category dedupe as everything else),
+it never drops what a previous run already sorted there.
+
 Within each output category, rows are deduped on Positive Prompt text (same
-convention as extract_image_prompts.py) - if two source rows land in the same
-category with identical Positive Prompt text, only the first is kept. Rows
-with no Positive Prompt text are never deduped against each other. Duplicates
-are checked per-category, not globally, since the same prompt legitimately
-appearing in two different categories (e.g. a category from
-category_keywords.local.json vs. general) isn't a duplicate.
+convention as extract_image_prompts.py) - if two rows (whether from a source
+file this run or already sitting in that category's existing output file)
+land in the same category with identical Positive Prompt text, only the
+first one seen is kept. Rows with no Positive Prompt text are never deduped
+against each other. Duplicates are checked per-category, not globally, since
+the same prompt legitimately appearing in two different categories (e.g. a
+category from category_keywords.local.json vs. general) isn't a duplicate.
 
 Usage:
+    # Scans the current directory for source CSVs, writes category CSVs
+    # into that same directory:
     python sort_prompts_by_category.py
+
+    # Scans a specific directory instead:
+    python sort_prompts_by_category.py F:\\Programs\\ComfyFiles\\output
+
+    # Writes the category CSVs somewhere other than the source directory:
+    python sort_prompts_by_category.py F:\\Programs\\ComfyFiles\\output --output-dir F:\\Programs\\ComfyFiles\\output\\sorted
 """
 
+import argparse
 import csv
 import re
 from pathlib import Path
@@ -51,8 +67,6 @@ try:
     from local_config import load_named_list, load_list  # run directly: python sort_prompts_by_category.py
 except ImportError:
     from comfy_prompt_tools.local_config import load_named_list, load_list  # imported as a package
-
-OUTPUT_DIR = Path(r"F:\Programs\ComfyFiles\output")
 
 CONFIG_PATH = Path(__file__).resolve().parent / "category_keywords.json"
 COUNT_TAG_NOUNS_PATH = Path(__file__).resolve().parent / "count_tag_nouns.json"
@@ -141,6 +155,26 @@ def write_csv(path: Path, fieldnames, rows):
         writer.writerows(rows)
 
 
+def seed_bucket_from_existing_output(category, output_dir, buckets, seen_prompts, fieldnames):
+    """Load a category's existing <category>.csv (if any) into buckets/
+    seen_prompts before any new rows are added, so writing the file back out
+    later merges with what a previous run already sorted there instead of
+    replacing it."""
+    existing_path = output_dir / f"{category}.csv"
+    if not existing_path.is_file():
+        return
+    existing_fields, existing_rows = read_csv(existing_path)
+    for field in existing_fields:
+        if field not in fieldnames:
+            fieldnames.append(field)
+    for row in existing_rows:
+        positive = (row.get("Positive Prompt") or "").strip()
+        label = row.get("File Name") or row.get("File Path") or "(unnamed row)"
+        if positive:
+            seen_prompts[category][positive] = label
+        buckets[category].append(row)
+
+
 def categorize(row):
     text = " ".join(
         (row.get(col) or "") for col in ("Positive Prompt", "Cleaned Prompt") if col in row
@@ -153,21 +187,28 @@ def categorize(row):
     return "general_group" if is_group(row) else "general_solo"
 
 
-def main():
+def run(directory=".", output_dir=None):
+    directory = Path(directory)
+    output_dir = Path(output_dir) if output_dir else directory
+
     csv_files = sorted(
-        p for p in OUTPUT_DIR.glob("*.csv") if p.name not in EXCLUDE
+        p for p in directory.glob("*.csv") if p.name not in EXCLUDE
     )
-    print(f"Found {len(csv_files)} source CSV file(s)")
+    print(f"Found {len(csv_files)} source CSV file(s) in {directory}")
 
     if not csv_files:
         names = "/".join(f"{name}.csv" for name in CATEGORY_NAMES)
-        print(f"No source CSV files found; leaving existing {names} untouched.")
+        print(f"No source CSV files found in {directory}; leaving existing {names} untouched.")
         return
 
     fieldnames = []
     buckets = {name: [] for name in CATEGORY_NAMES}
     seen_prompts = {category: {} for category in buckets}
     duplicates_skipped = 0
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for category in CATEGORY_NAMES:
+        seed_bucket_from_existing_output(category, output_dir, buckets, seen_prompts, fieldnames)
 
     for path in csv_files:
         file_fields, rows = read_csv(path)
@@ -192,12 +233,26 @@ def main():
             buckets[category].append(row)
 
     for category, rows in buckets.items():
-        out_path = OUTPUT_DIR / f"{category}.csv"
+        out_path = output_dir / f"{category}.csv"
         write_csv(out_path, fieldnames, rows)
         print(f"{category}.csv: {len(rows)} rows")
 
     print(f"Skipped {duplicates_skipped} duplicate row(s) across all categories.")
     print(f"Source file(s) left in place ({len(csv_files)}); delete them manually once verified.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "directory", nargs="?", default=".",
+        help="Directory to scan for source *.csv files (default: current directory)",
+    )
+    parser.add_argument(
+        "-o", "--output-dir", default=None,
+        help="Directory to write the category CSV files into (default: same as the source directory)",
+    )
+    args = parser.parse_args()
+    run(args.directory, args.output_dir)
 
 
 if __name__ == "__main__":
