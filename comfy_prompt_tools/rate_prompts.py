@@ -126,6 +126,14 @@ def rate_prompt(text: str, model: str = MODEL):
         "prompt": text,
         "system": SYSTEM_PROMPT,
         "stream": False,
+        # Some models (e.g. gemma4-heretic) support a hidden "thinking" pass
+        # before the visible answer. Left on, they can burn the entire
+        # num_predict budget on invisible reasoning and return a completely
+        # empty response with done_reason "length" instead of a rating -
+        # same failure mode generate_prompt_variations.py/clean_prompts.py
+        # already disable this for. strip_thinking() in parse_rating_response
+        # above is a second line of defense for a model that ignores this.
+        "think": False,
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
     req = urllib.request.Request(
