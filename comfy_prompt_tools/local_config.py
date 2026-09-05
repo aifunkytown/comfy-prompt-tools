@@ -65,6 +65,31 @@ MAX_RESPONSE_TOKENS = 500
 REQUEST_TIMEOUT_SECONDS = 180
 
 
+# Distinctive phrases from the base model's built-in safety refusal
+# occasionally leaking through despite an "abliterated"/uncensored
+# fine-tune (observed verbatim from gemma4-heretic: "I cannot fulfill this
+# request. I am prohibited from generating or rewriting content that
+# contains sexually explicit material, including descriptions of genitalia
+# and pornographic acts."). Matched case-insensitively against a couple of
+# the message's most distinctive phrases rather than the whole sentence,
+# since exact wording can vary slightly between calls.
+_REFUSAL_MARKERS = (
+    "cannot fulfill this request",
+    "prohibited from generating",
+)
+
+
+def is_refusal_response(text: str) -> bool:
+    """True if text looks like the base model's safety filter refusing the
+    request instead of actually attempting it - shared by clean_prompts.py
+    and rate_prompts.py, both of which retry once on this specific failure
+    and give up as a permanent "ERROR" (not the transient "UNPARSED") if it
+    persists, since a genuine refusal won't be fixed by reformatting or a
+    generic retry the way a merely-malformed response might be."""
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _REFUSAL_MARKERS)
+
+
 def strip_thinking(raw_response: str) -> str:
     """Reasoning models (e.g. huihui_ai/qwen3-abliterated) generate inside
     a <think>...</think> block before their actual answer - Ollama's chat

@@ -23,6 +23,18 @@ with - a row that already has one always goes through the normal text
 rewrite above, on --model or the default, unchanged. This path is rated in
 the same call too.
 
+A model occasionally leaks its base model's built-in safety refusal through
+despite being an "abliterated"/uncensored fine-tune (observed verbatim from
+gemma4-heretic: "I cannot fulfill this request. I am prohibited from
+generating or rewriting content that contains sexually explicit material,
+including descriptions of genitalia and pornographic acts."). This is
+retried once immediately; if it persists, the row's Cleaned Prompt AND
+Content Rating are both set to the literal string "ERROR" instead of being
+left blank or UNPARSED. Unlike a normal already-done row, "ERROR" is
+permanent and is never reprocessed by this script again, --overwrite
+included, since a genuine refusal won't be fixed by trying again later -
+rate_prompts.py recognizes a Cleaned Prompt of "ERROR" the same way.
+
 By default the final saved CSV is trimmed down to just the "Positive Prompt",
 "Cleaned Prompt", "Content Rating", and "Rating Reason" columns, dropping
 File Name/File Path/Negative Prompt/etc. Pass -v/--verbose to keep every
@@ -95,12 +107,14 @@ DEFAULT_COMFYUI_SERVER = "http://127.0.0.1:8000"
 
 try:
     from local_config import (  # run directly: python clean_prompts.py
-        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_local_text, load_text, sanitize_ascii, strip_thinking,
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, is_refusal_response,
+        load_local_text, load_text, sanitize_ascii, strip_thinking,
     )
     import rate_prompts
 except ImportError:
     from comfy_prompt_tools.local_config import (  # imported as a package
-        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, load_local_text, load_text, sanitize_ascii, strip_thinking,
+        MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, is_refusal_response,
+        load_local_text, load_text, sanitize_ascii, strip_thinking,
     )
     from comfy_prompt_tools import rate_prompts
 
@@ -288,6 +302,43 @@ def _split_response_and_rating(raw_response: str):
     return main_text, rating, reason
 
 
+def _post_ollama(payload, timeout):
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return result["response"]
+
+
+# Returned by clean_prompt()/describe_image() in place of (cleaned_text,
+# rating, reason) when the base model's safety filter refuses the request
+# twice in a row (see is_refusal_response) - a permanent failure, distinct
+# from the model simply not following the delimiter format, so it's marked
+# "ERROR" rather than "UNPARSED": process_csv() below never retries an
+# ERROR row again, --overwrite included, and rate_prompts.py recognizes a
+# Cleaned Prompt of "ERROR" the same way instead of trying to rate it.
+_REFUSAL_REASON = "Model refused twice (safety filter leaking through)"
+
+
+def _call_with_refusal_retry(payload, timeout):
+    """Posts to Ollama, retrying once if the raw response looks like the
+    base model's safety filter refusing the request instead of actually
+    attempting it (see local_config.is_refusal_response) - a resampled
+    request often gets past it. Returns None if refusal persists after the
+    retry, signalling the caller to mark the row ERROR instead of treating
+    refusal text as if it were a real cleaned prompt/description."""
+    raw_response = _post_ollama(payload, timeout)
+    if is_refusal_response(raw_response):
+        print("  refusal detected, retrying once...", file=sys.stderr)
+        raw_response = _post_ollama(payload, timeout)
+        if is_refusal_response(raw_response):
+            return None
+    return raw_response
+
+
 def clean_prompt(positive_prompt: str, model: str = MODEL, system_prompt: str = None):
     """Returns (cleaned_text, rating, reason) - see _split_response_and_rating.
     system_prompt defaults to the module-level SYSTEM_PROMPT (built from
@@ -306,14 +357,10 @@ def clean_prompt(positive_prompt: str, model: str = MODEL, system_prompt: str = 
         "think": False,
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-    return _split_response_and_rating(result["response"])
+    raw_response = _call_with_refusal_retry(payload, REQUEST_TIMEOUT_SECONDS)
+    if raw_response is None:
+        return "ERROR", "ERROR", _REFUSAL_REASON
+    return _split_response_and_rating(raw_response)
 
 
 def describe_image(image_path, model: str = VISION_MODEL, system_prompt: str = None):
@@ -336,14 +383,10 @@ def describe_image(image_path, model: str = VISION_MODEL, system_prompt: str = N
         "think": False,  # see clean_prompt()'s comment on this
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS + 60) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-    return _split_response_and_rating(result["response"])
+    raw_response = _call_with_refusal_retry(payload, REQUEST_TIMEOUT_SECONDS + 60)
+    if raw_response is None:
+        return "ERROR", "ERROR", _REFUSAL_REASON
+    return _split_response_and_rating(raw_response)
 
 
 def submit_cleaned_prompt(rerun, workflow_bundle, server, client_id, row, cleaned_text, randomize_seed):
@@ -396,7 +439,18 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt
     failed = 0
 
     for i, row in enumerate(rows, 1):
-        if row.get(OUTPUT_COLUMN, "").strip() and not args.overwrite:
+        existing_output = row.get(OUTPUT_COLUMN, "").strip()
+        # ERROR is permanent (a refusal that survived its own dedicated
+        # retry in _call_with_refusal_retry) - never retried, --overwrite
+        # or not, same as rate_prompts.py treats its own ERROR rows.
+        if existing_output == "ERROR":
+            continue
+        # A Cleaned Prompt that is itself refusal text (written by a run
+        # from before this retry/ERROR logic existed) isn't a real "done"
+        # row either - always worth a normal retry, same as ERROR would
+        # have gotten if this logic had caught it the first time, but
+        # without requiring --overwrite and redoing every real row too.
+        if existing_output and not is_refusal_response(existing_output) and not args.overwrite:
             continue  # already done, e.g. resuming a previous run
 
         positive = (row.get(PROMPT_COLUMN, "") or "").strip()
