@@ -445,7 +445,12 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt
         # or not, same as rate_prompts.py treats its own ERROR rows.
         if existing_output == "ERROR":
             continue
-        if existing_output and not args.overwrite:
+        # A Cleaned Prompt that is itself refusal text (written by a run
+        # from before this retry/ERROR logic existed) isn't a real "done"
+        # row either - always worth a normal retry, same as ERROR would
+        # have gotten if this logic had caught it the first time, but
+        # without requiring --overwrite and redoing every real row too.
+        if existing_output and not is_refusal_response(existing_output) and not args.overwrite:
             continue  # already done, e.g. resuming a previous run
 
         positive = (row.get(PROMPT_COLUMN, "") or "").strip()
