@@ -298,6 +298,12 @@ def clean_prompt(positive_prompt: str, model: str = MODEL, system_prompt: str = 
         "prompt": positive_prompt,
         "system": system_prompt if system_prompt is not None else SYSTEM_PROMPT,
         "stream": False,
+        # Some models (e.g. gemma4-heretic) support a hidden "thinking" pass
+        # before the visible answer. Left on, they can burn the entire
+        # num_predict budget on invisible reasoning and return a completely
+        # empty response with done_reason "length" - same failure mode
+        # generate_prompt_variations.py already disables this for.
+        "think": False,
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
     req = urllib.request.Request(
@@ -327,6 +333,7 @@ def describe_image(image_path, model: str = VISION_MODEL, system_prompt: str = N
         "system": system_prompt if system_prompt is not None else IMAGE_DESCRIPTION_SYSTEM_PROMPT,
         "images": [image_b64],
         "stream": False,
+        "think": False,  # see clean_prompt()'s comment on this
         "options": {"num_predict": MAX_RESPONSE_TOKENS},
     }
     req = urllib.request.Request(
