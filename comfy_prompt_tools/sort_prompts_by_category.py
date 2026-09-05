@@ -1,8 +1,14 @@
 """
 Combines every *.csv file directly under a given directory (the current
 directory by default) into category files, based on keyword categories and
-subject count found in the "Positive Prompt" (and "Cleaned Prompt", if
-present) column of each row.
+subject count found in the "Cleaned Prompt" column of each row.
+
+Only ever sorts off "Cleaned Prompt", never the raw "Positive Prompt" - a
+row with no Cleaned Prompt yet (not run through clean_prompts.py) is left
+uncategorized rather than guessed at from its unreliable raw tag-soup text:
+it's logged and skipped (not written to any category file), staying in its
+source CSV - which, like every source row, is left in place regardless (see
+below) - so a later run picks it up once it actually has a Cleaned Prompt.
 
 The keyword categories themselves (which words trigger which category) live
 in category_keywords.json next to this script, not in this file - see that
@@ -21,9 +27,10 @@ and any new "name" is appended. It's gitignored, so it's the place for
 personal/local-only keyword tweaks that shouldn't be committed.
 
 Solo vs. group is decided by count_subjects(): first it looks for booru-style
-counting tags in the Positive Prompt (solo, 1girl, 2girls, 1girl+1boy, duo,
-trio, group, multiple, etc.) and sums them. If no such tags are found at all,
-it falls back to scanning the Cleaned Prompt prose for group-indicating words
+counting tags in the Cleaned Prompt (solo, 1girl, 2girls, 1girl+1boy, duo,
+trio, group, multiple, etc. - rare in a natural-language rewrite, but checked
+for robustness) and sums them. If no such tags are found at all, it falls
+back to scanning the same Cleaned Prompt's prose for group-indicating words
 (two/three/several/pair/group/crowd, "another woman", "and her dog", etc.).
 With no signal either way, it defaults to solo.
 
@@ -131,14 +138,12 @@ def count_subjects_from_tags(text):
 
 
 def is_group(row):
-    positive = (row.get("Positive Prompt") or "").lower()
-    total, found_any = count_subjects_from_tags(positive)
+    # Cleaned Prompt only - see categorize()'s docstring on why this script
+    # never sorts off the raw, uncleaned Positive Prompt.
+    prose = (row.get("Cleaned Prompt") or "").lower()
+    total, found_any = count_subjects_from_tags(prose)
     if found_any:
         return total >= 2
-
-    # No booru-style tags at all; fall back to prose in Cleaned Prompt
-    # (or Positive Prompt if there's no Cleaned Prompt column/value).
-    prose = (row.get("Cleaned Prompt") or "").lower() or positive
     return bool(PROSE_GROUP_RE.search(prose))
 
 
@@ -176,9 +181,14 @@ def seed_bucket_from_existing_output(category, output_dir, buckets, seen_prompts
 
 
 def categorize(row):
-    text = " ".join(
-        (row.get(col) or "") for col in ("Positive Prompt", "Cleaned Prompt") if col in row
-    ).lower()
+    """Cleaned Prompt only - never the raw Positive Prompt. A row with no
+    Cleaned Prompt yet hasn't been through clean_prompts.py, and its raw
+    tag-soup text is unreliable for both keyword matching (booru tags don't
+    read the same as the keyword lists were written against) and the
+    is_group() subject count - such a row is skipped by run() before this
+    is ever called (see there), rather than guessed at from the base
+    prompt."""
+    text = (row.get("Cleaned Prompt") or "").lower()
     for cat in CATEGORIES:
         if any(k in text for k in cat["keywords"]) and not any(
             k in text for k in cat.get("exclude_keywords", ())
@@ -205,6 +215,7 @@ def run(directory=".", output_dir=None):
     buckets = {name: [] for name in CATEGORY_NAMES}
     seen_prompts = {category: {} for category in buckets}
     duplicates_skipped = 0
+    uncleaned_skipped = 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for category in CATEGORY_NAMES:
@@ -216,9 +227,22 @@ def run(directory=".", output_dir=None):
             if field not in fieldnames:
                 fieldnames.append(field)
         for row in rows:
+            label = row.get("File Name") or row.get("File Path") or "(unnamed row)"
+
+            if not (row.get("Cleaned Prompt") or "").strip():
+                # Not run through clean_prompts.py yet - never sorted from
+                # the raw Positive Prompt (see categorize()'s docstring).
+                # Left uncategorized (not written to any bucket/category
+                # file) so it's picked up once it actually has a Cleaned
+                # Prompt - the row stays in this source file regardless,
+                # same as every other row (source files are always left in
+                # place; see the module docstring).
+                print(f"Skipping row with no Cleaned Prompt yet: {label}")
+                uncleaned_skipped += 1
+                continue
+
             category = categorize(row)
             positive = (row.get("Positive Prompt") or "").strip()
-            label = row.get("File Name") or row.get("File Path") or "(unnamed row)"
 
             if positive:
                 if positive in seen_prompts[category]:
@@ -238,6 +262,7 @@ def run(directory=".", output_dir=None):
         print(f"{category}.csv: {len(rows)} rows")
 
     print(f"Skipped {duplicates_skipped} duplicate row(s) across all categories.")
+    print(f"Skipped {uncleaned_skipped} row(s) with no Cleaned Prompt yet (run clean_prompts.py first, then re-run this).")
     print(f"Source file(s) left in place ({len(csv_files)}); delete them manually once verified.")
 
 
