@@ -7,6 +7,13 @@ result into "Content Rating" and "Rating Reason" columns in the same CSV.
 Rates the "Cleaned Prompt" column when present and non-empty, falling back to
 "Positive Prompt" otherwise - matching what actually gets sent to ComfyUI.
 
+Rows already carrying a real Content Rating are skipped on a re-run (so it's
+safe to stop and resume, or to run again after adding new rows to a CSV) -
+pass --overwrite to force everything to be re-rated instead. Rows whose
+Content Rating is "UNPARSED" (the model's response didn't parse into a valid
+rating) are always retried on a re-run, --overwrite or not, since UNPARSED
+isn't a real rating to begin with.
+
 The rubric lives in rate_prompts.json (checked in, edit it there rather than
 in code); rate_prompts.local.json next to it can append personal instructions
 via a "system_prompt_addendum" string, same pattern as clean_prompts.py.
@@ -184,7 +191,12 @@ def process_csv(csv_path, args):
     failed = 0
 
     for i, row in enumerate(rows, 1):
-        if row.get(RATING_COLUMN, "").strip() and not args.overwrite:
+        existing_rating = row.get(RATING_COLUMN, "").strip()
+        # UNPARSED isn't a real rating, just a record that the model's
+        # response didn't parse - always worth another shot on a re-run,
+        # same as rate_prompt()'s own in-request retries above, without
+        # requiring --overwrite and re-doing every already-successful row.
+        if existing_rating and existing_rating != "UNPARSED" and not args.overwrite:
             continue  # already rated, e.g. resuming a previous run
 
         text = get_input_text(row)
