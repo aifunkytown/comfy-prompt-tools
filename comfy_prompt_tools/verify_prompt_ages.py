@@ -13,8 +13,17 @@ catch a model occasionally not following its own system prompt - not to
 replace clean_prompts.py's own age instructions, which still do the real
 work on a normal cleaning pass.
 
-Marks each row's "Age Verified" column "yes" once checked (change or not) -
-skipped on a re-run unless --overwrite, same convention as rate_prompts.py.
+A row is skipped without ever calling the LLM if a local pre-filter is
+confident it already meets the requirement (see already_meets_age_
+requirement()): the scene reads as a single subject and an explicit age
+of at least 20 is already found in the text. Deliberately conservative -
+a multi-subject scene, or a scene with no confidently-recognized age
+phrasing, always goes through the real LLM check, since a false positive
+here would silently skip verifying a row that actually needs it.
+
+Marks each row's "Age Verified" column "yes" once checked (change or not,
+pre-filtered or not) - skipped on a re-run unless --overwrite, same
+convention as rate_prompts.py.
 A model occasionally leaks the base model's built-in safety refusal through
 despite being an "abliterated"/uncensored fine-tune (see
 local_config.is_refusal_response) - retried once immediately, and marked
@@ -42,6 +51,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -58,11 +68,62 @@ try:
         MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, is_refusal_response,
         load_text, load_local_text, sanitize_ascii, strip_thinking,
     )
+    import sort_prompts_by_category as _spc
 except ImportError:
     from comfy_prompt_tools.local_config import (  # imported as a package
         MAX_RESPONSE_TOKENS, REQUEST_TIMEOUT_SECONDS, is_refusal_response,
         load_text, load_local_text, sanitize_ascii, strip_thinking,
     )
+    from comfy_prompt_tools import sort_prompts_by_category as _spc
+
+# Local pre-filter so an already-compliant row can skip the LLM call
+# entirely (see already_meets_age_requirement()) - deliberately
+# conservative, since a false positive here (deciding a row is fine when
+# it isn't) would silently let a non-compliant row through completely
+# unverified, with no LLM call to ever catch it. A false negative (not
+# recognizing a valid age phrasing) just falls through to the normal LLM
+# check, so it costs time, never correctness.
+_AGE_YEARS_OLD_RE = re.compile(r"\b(\d{1,3})[\s-]*(?:years?|yrs?)[\s-]*old\b", re.IGNORECASE)
+_AGE_AGED_RE = re.compile(r"\baged\s+(\d{1,3})\b", re.IGNORECASE)
+_AGE_DECADE_WORD_RE = re.compile(
+    r"\bin (?:her|his|their) (?:early|mid|late)?\s*(twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties)\b",
+    re.IGNORECASE,
+)
+_AGE_DECADE_NUMERIC_RE = re.compile(
+    r"\bin (?:her|his|their) (?:early|mid|late)?\s*(20s|30s|40s|50s|60s|70s|80s|90s)\b",
+    re.IGNORECASE,
+)
+_DECADE_WORD_MIN_AGE = {
+    "twenties": 20, "thirties": 30, "forties": 40, "fifties": 50,
+    "sixties": 60, "seventies": 70, "eighties": 80, "nineties": 90,
+}
+_DECADE_NUMERIC_MIN_AGE = {f"{n}0s": n * 10 for n in range(2, 10)}
+
+
+def _find_explicit_ages(text):
+    """Every explicit age statement found in text, as the minimum age each
+    implies (e.g. "35-year-old" -> 35, "in her late 20s" -> 20) - empty if
+    none found. See already_meets_age_requirement() for how this is used;
+    on its own this is just detection, not a verdict."""
+    ages = [int(m.group(1)) for m in _AGE_YEARS_OLD_RE.finditer(text)]
+    ages += [int(m.group(1)) for m in _AGE_AGED_RE.finditer(text)]
+    ages += [_DECADE_WORD_MIN_AGE[m.group(1).lower()] for m in _AGE_DECADE_WORD_RE.finditer(text)]
+    ages += [_DECADE_NUMERIC_MIN_AGE[m.group(1).lower()] for m in _AGE_DECADE_NUMERIC_RE.finditer(text)]
+    return ages
+
+
+def already_meets_age_requirement(text):
+    """True only when it's safe to skip the LLM call for this row entirely:
+    the scene reads as a single subject (sort_prompts_by_category.is_group()
+    - the same solo/group heuristic already used to sort these CSVs, so a
+    multi-subject scene always falls through to the LLM, since confirming
+    EVERY subject has an age needs real judgment, not just "found a
+    number") AND at least one explicit age was found, with every match
+    found (there's normally just one) at least 20."""
+    if _spc.is_group({"Cleaned Prompt": text}):
+        return False
+    ages = _find_explicit_ages(text)
+    return bool(ages) and all(age >= 20 for age in ages)
 
 # verify_prompt_ages.json (checked in) holds "system_prompt_base" - edit the
 # instructions there, not in code. verify_prompt_ages.local.json next to it
@@ -166,25 +227,32 @@ def process_csv(csv_path, args):
             continue
 
         print(f"[{i}/{total}] {row.get('File Name', '')}")
-        try:
-            result_text, status = verify_prompt_age(text, model=args.model)
-        except Exception as e:
-            print(f"  error: {e}", file=sys.stderr)
-            failed += 1
-            continue
 
-        if status == "ERROR":
-            row[STATUS_COLUMN] = "ERROR"
-            row[NOTE_COLUMN] = result_text
-            print(f"  ERROR - {result_text}")
-            failed += 1
-        else:
-            changed = result_text != text
-            row[CLEANED_COLUMN] = result_text
+        if already_meets_age_requirement(text):
             row[STATUS_COLUMN] = "yes"
-            row[NOTE_COLUMN] = "age added/corrected" if changed else "no change needed"
+            row[NOTE_COLUMN] = "already has an explicit age >=20 (pre-filter, no LLM call needed)"
             print(f"  {row[NOTE_COLUMN]}")
             succeeded += 1
+        else:
+            try:
+                result_text, status = verify_prompt_age(text, model=args.model)
+            except Exception as e:
+                print(f"  error: {e}", file=sys.stderr)
+                failed += 1
+                continue
+
+            if status == "ERROR":
+                row[STATUS_COLUMN] = "ERROR"
+                row[NOTE_COLUMN] = result_text
+                print(f"  ERROR - {result_text}")
+                failed += 1
+            else:
+                changed = result_text != text
+                row[CLEANED_COLUMN] = result_text
+                row[STATUS_COLUMN] = "yes"
+                row[NOTE_COLUMN] = "age added/corrected" if changed else "no change needed"
+                print(f"  {row[NOTE_COLUMN]}")
+                succeeded += 1
 
         # checkpoint after every row so a crash doesn't lose progress
         with open(tmp_path, "w", newline="", encoding="utf-8") as f:
