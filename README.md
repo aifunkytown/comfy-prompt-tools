@@ -80,19 +80,18 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   so a later re-run recognizes it and repeats the *image* fallback instead
   of feeding that marker through the text-rewrite model as if it were a
   real prompt - the actual description lives in `Cleaned Prompt`, never
-  cleaned twice. Has no notion of content rating at all - see
-  `rate_prompts.py`/`verify_prompt_ages.py` below, or `clean_and_rate.py` to
-  run all three together. Can optionally submit each cleaned prompt straight
-  to ComfyUI as it's cleaned (`--submit-to-comfyui`), routing keyword-matched
-  LoRAs on automatically (see `rerun_prompts_comfyui.py`'s `lora_rules.json`).
-  Its system prompts are likewise split base/local - both the text-rewrite
-  prompt and the image-description prompt live in `clean_prompts.json`
-  (checked in, edit them there rather than in code), and
-  `clean_prompts.local.json` next to it can append personal instructions
-  onto the text-rewrite one. Also exposes a `run(config_path)` entry point
-  (same JSON-config convention as `run_test.py`/`lora_test.py`/
+  cleaned twice. Only ever cleans - no notion of content rating, and
+  doesn't submit anything to ComfyUI either; see `rate_prompts.py`/
+  `verify_prompt_ages.py` below and `cleaning_orchestrator.py` to run
+  cleaning, age-verification, rating, and (optionally) queuing to ComfyUI
+  all together. Its system prompts are split base/local - both the
+  text-rewrite prompt and the image-description prompt live in
+  `clean_prompts.json` (checked in, edit them there rather than in code),
+  and `clean_prompts.local.json` next to it can append personal
+  instructions onto the text-rewrite one. Also exposes a `run(config_path)`
+  entry point (same JSON-config convention as `run_test.py`/`lora_test.py`/
   `generate_prompt_variations.py`/`rerun_prompts_comfyui.py`/
-  `extract_and_clean.py`/`clean_and_rate.py`).
+  `extract_and_clean.py`/`cleaning_orchestrator.py`).
 
 - **`rate_prompts.py`** - Content-rates a prompt CSV on a movie-style scale
   (`G`/`PG`/`PG-13`/`R`/`X`/`XXX`, or `REVIEW` for suspected underage
@@ -100,10 +99,10 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   Reason` columns - rates `Cleaned Prompt` when present, falling back to
   `Positive Prompt` otherwise (matching what actually gets sent to
   ComfyUI). Has no notion of cleaning at all - run it directly to rate any
-  CSV with prompt text, cleaned or not, or use `clean_and_rate.py` to clean
-  and rate together. Same base/local split as everywhere else: the rubric
-  lives in `rate_prompts.json` (checked in), `rate_prompts.local.json` next
-  to it can append personal instructions.
+  CSV with prompt text, cleaned or not, or use `cleaning_orchestrator.py`
+  to clean and rate together. Same base/local split as everywhere else:
+  the rubric lives in `rate_prompts.json` (checked in),
+  `rate_prompts.local.json` next to it can append personal instructions.
 
 - **`verify_prompt_ages.py`** - Second-pass safety net for `clean_prompts.py`'s
   age requirement (every person/humanoid subject must have an explicit
@@ -112,7 +111,9 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   row's `Cleaned Prompt` to a local Ollama model to check that requirement
   is actually met; if it is, the text comes back unchanged, otherwise just
   enough is rewritten to add/correct the age(s), leaving everything else
-  untouched. Marks `Age Verified` = `yes` per row (skipped on a re-run
+  untouched. A conservative local pre-filter skips the LLM call entirely
+  when the scene is confidently single-subject and already has a clear
+  age stated. Marks `Age Verified` = `yes` per row (skipped on a re-run
   unless `--overwrite`) plus a short `Age Verification Note`. Exists to
   backfill CSVs cleaned before this policy existed, or catch a model not
   following its own system prompt - not a replacement for
@@ -121,18 +122,25 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   `clean_prompts.py`/`rate_prompts.py`; same base/local system-prompt split
   (`verify_prompt_ages.json` + `verify_prompt_ages.local.json`).
 
-- **`clean_and_rate.py`** - Runs `clean_prompts.py`, then
-  `verify_prompt_ages.py`, then `rate_prompts.py` in one command, on the
-  same CSV(s). Age-verification runs before rating (not after) so a row's
-  `Content Rating` reflects its actually-final `Cleaned Prompt` - this also
-  matters for correctness: `rate_prompts.json`'s `REVIEW` exception for an
-  explicitly stated adult age only works if that age is already present in
-  the text being rated. None of the three scripts know about each other -
-  this is what chains them together; each remains fully usable on its own
-  too. Uses the same model and `--overwrite` for all three stages - call
-  the individual scripts directly instead if a stage needs its own model or
-  independent overwrite behavior. Also exposes a `run(config_path)` entry
-  point (same JSON-config convention as everywhere else).
+- **`cleaning_orchestrator.py`** - Runs `clean_prompts.py`, then
+  `verify_prompt_ages.py`, then `rate_prompts.py`, then (if
+  `--submit-to-comfyui`) queues each row's final `Cleaned Prompt` to
+  ComfyUI, in one command, on the same CSV(s). Age-verification runs
+  before rating (not after) so a row's `Content Rating` reflects its
+  actually-final `Cleaned Prompt` - this also matters for correctness:
+  `rate_prompts.json`'s `REVIEW` exception for an explicitly stated adult
+  age only works if that age is already present in the text being rated.
+  Queuing to ComfyUI runs last of all, as its own separate pass once
+  cleaning/verification/rating have all finished, reusing
+  `rerun_prompts_comfyui.py`'s workflow builder and keyword-based LoRA
+  routing - so what's actually submitted for rendering is each row's
+  fully-finished text, not an in-progress draft. None of the four stages
+  know about each other's job - this is what chains them together; each
+  remains fully usable on its own too. Uses the same model and
+  `--overwrite` for the clean/verify/rate stages - call the individual
+  scripts directly instead if a stage needs its own model or independent
+  overwrite behavior. Also exposes a `run(config_path)` entry point (same
+  JSON-config convention as everywhere else).
 
 - **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
   `clean_prompts.py` in one command instead of two, on whatever CSV(s) the

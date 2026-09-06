@@ -4,12 +4,14 @@ Ollama model to rewrite each one as a natural-language prompt suitable for
 a modern text-to-image model (e.g. Krea 2), and writes the result back into
 a "Cleaned Prompt" column in the same CSV.
 
-This script only ever cleans - it has no notion of content rating at all,
-and never writes a "Content Rating"/"Rating Reason" column. See
-rate_prompts.py for that (rates "Cleaned Prompt" when present, falling back
-to "Positive Prompt" otherwise) and verify_prompt_ages.py for a second-pass
-age-requirement check, both run as separate steps - or clean_and_rate.py to
-run cleaning, age-verification, and rating in one command.
+This script only ever cleans - it has no notion of content rating, and
+never writes a "Content Rating"/"Rating Reason" column, nor does it submit
+anything to ComfyUI. See rate_prompts.py for rating (rates "Cleaned
+Prompt" when present, falling back to "Positive Prompt" otherwise) and
+verify_prompt_ages.py for a second-pass age-requirement check, both run as
+separate steps - or cleaning_orchestrator.py to run cleaning,
+age-verification, rating, and (optionally) queuing each result to ComfyUI,
+all in one command.
 
 A row with no Positive Prompt text at all (extract_image_prompts.py writes
 one of these for an image with no embedded metadata, instead of skipping
@@ -58,15 +60,10 @@ Usage:
     # for the no-metadata image-description fallback):
     python clean_prompts.py <path-to-csv> --model llama3.1:8b
 
-    # Also submit each cleaned prompt to ComfyUI for rendering as it's cleaned.
-    # Keyword-matched LoRAs are turned on automatically, same as
-    # rerun_prompts_comfyui.py (see its LORA_RULES):
-    python clean_prompts.py <path-to-csv> --submit-to-comfyui --workflow <workflow.json>
-
 Also exposes a run(config_path) entry point (same JSON-config convention as
 run_test.py/lora_test.py/generate_prompt_variations.py/rerun_prompts_
-comfyui.py/extract_and_clean.py) for driving this programmatically without
-argparse - used by funkytown-testing-harness-gui's Generations tab.
+comfyui.py/extract_and_clean.py/cleaning_orchestrator.py) for driving this
+programmatically without argparse.
 """
 
 import argparse
@@ -77,7 +74,6 @@ import os
 import sys
 import urllib.error
 import urllib.request
-import uuid
 from pathlib import Path
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"  # "localhost" can resolve to ::1 first and get refused if Ollama only binds IPv4
@@ -96,10 +92,6 @@ IMAGE_PATH_COLUMN = "File Path"
 # this literal string through the text-rewrite model as if it were a real
 # prompt.
 NOT_FOUND_MARKER = "not found"
-
-RERUN_SCRIPT_DIR = str(Path(__file__).resolve().parent)  # rerun_prompts_comfyui.py lives alongside this script
-DEFAULT_WORKFLOW = r"F:\Programs\ComfyFiles\user\default\workflows\krea2_basic_t2i.json"
-DEFAULT_COMFYUI_SERVER = "http://127.0.0.1:8000"
 
 try:
     from local_config import (  # run directly: python clean_prompts.py
@@ -198,8 +190,8 @@ def resolve_system_prompts(config_path=None, style_config=None):
     placeholder too, in principle, though none of the shipped configs do.
 
     This script has no notion of content rating at all - see rate_prompts.
-    py for that, run separately (or via clean_and_rate.py, which runs both
-    plus verify_prompt_ages.py in sequence)."""
+    py for that, run separately (or via cleaning_orchestrator.py, which runs
+    both plus verify_prompt_ages.py in sequence)."""
     config_path = Path(config_path) if config_path else SYSTEM_PROMPT_CONFIG_PATH
     base = build_system_prompt(config_path, style_config)
     image_base = load_text(config_path, "image_description_system_prompt")
@@ -322,36 +314,7 @@ def describe_image(image_path, model: str = VISION_MODEL, system_prompt: str = N
     return _extract_cleaned_text(raw_response)
 
 
-def submit_cleaned_prompt(rerun, workflow_bundle, server, client_id, row, cleaned_text, randomize_seed):
-    """Queue one cleaned prompt on ComfyUI, reusing rerun_prompts_comfyui's workflow
-    builder and its keyword-based LoRA toggling."""
-    template, positive_id, negative_id, save_ids, lora_node_id = workflow_bundle
-    negative_text = (row.get("Negative Prompt") or "").strip()
-    name = row.get("File Name") or "row"
-    prefix = f"cleaned_{Path(name).stem}"
-
-    lora_matches = rerun.select_loras(cleaned_text)
-    lora_summary = ", ".join(f"{lora}@{strength}" for lora, strength in lora_matches) or "none"
-
-    wf = rerun.build_workflow_for_row(
-        template, positive_id, negative_id, save_ids,
-        cleaned_text, negative_text, prefix, randomize_seed,
-        lora_node_id, lora_matches,
-    )
-    try:
-        result = rerun.queue_prompt(server, wf, client_id)
-    except urllib.error.URLError as e:
-        print(f"  comfyui submit failed: {e}", file=sys.stderr)
-        return
-
-    node_errors = result.get("node_errors")
-    if node_errors:
-        print(f"  comfyui node errors: {node_errors}", file=sys.stderr)
-    else:
-        print(f"  queued in ComfyUI as prompt_id={result.get('prompt_id')} (LoRAs: {lora_summary})")
-
-
-def process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt, image_system_prompt):
+def process_csv(csv_path, args, system_prompt, image_system_prompt):
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fieldnames = list(reader.fieldnames or [])
@@ -409,12 +372,6 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt
             row[OUTPUT_COLUMN] = ""
             failed += 1
 
-        if args.submit_to_comfyui and row[OUTPUT_COLUMN]:
-            submit_cleaned_prompt(
-                rerun, workflow_bundle,
-                args.server, client_id, row, row[OUTPUT_COLUMN], args.random_seed,
-            )
-
         # checkpoint after every row so a crash doesn't lose progress
         with open(tmp_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -448,46 +405,33 @@ def process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt
         print("Nothing to do - every row already has a Cleaned Prompt (use --overwrite to redo them).")
 
 
-def clean_all(csv_paths, submit_to_comfyui=False, workflow=DEFAULT_WORKFLOW, server=DEFAULT_COMFYUI_SERVER,
-              random_seed=False, overwrite=False, verbose=False, model=MODEL, prompt_config=None,
-              style_config=None):
+def clean_all(csv_paths, overwrite=False, verbose=False, model=MODEL, prompt_config=None, style_config=None):
     """Core logic behind main() - process an explicit list of CSV paths
     without going through argparse. Callable directly by other scripts
-    (e.g. extract_and_clean.py, clean_and_rate.py). prompt_config: path to
-    a <name>.json prompt config (default: clean_prompts.json, i.e.
+    (e.g. extract_and_clean.py, cleaning_orchestrator.py). prompt_config:
+    path to a <name>.json prompt config (default: clean_prompts.json, i.e.
     SYSTEM_PROMPT_CONFIG_PATH) - see clean_prompts_qwen.json for an example
     of a second one, for a model that needs differently-worded directions.
     style_config: path to a style_<name>.json (default: style_realism.json)
     - only affects a prompt_config whose base text opts in via
     STYLE_PLACEHOLDER; see build_system_prompt(). Only ever produces a
-    Cleaned Prompt - no rating of any kind; see rate_prompts.py (and
-    clean_and_rate.py to run both, plus verify_prompt_ages.py, in
-    sequence)."""
-    args = argparse.Namespace(
-        submit_to_comfyui=submit_to_comfyui, workflow=workflow, server=server,
-        random_seed=random_seed, overwrite=overwrite, verbose=verbose, model=model,
-    )
+    Cleaned Prompt - no rating, and nothing submitted to ComfyUI; see
+    rate_prompts.py/verify_prompt_ages.py, or cleaning_orchestrator.py to
+    run cleaning, age-verification, rating, and (optionally) queuing to
+    ComfyUI all in sequence."""
+    args = argparse.Namespace(overwrite=overwrite, verbose=verbose, model=model)
     system_prompt, image_system_prompt = resolve_system_prompts(prompt_config, style_config)
-
-    rerun = workflow_bundle = client_id = None
-    if submit_to_comfyui:
-        sys.path.insert(0, RERUN_SCRIPT_DIR)
-        import rerun_prompts_comfyui as rerun
-
-        workflow_path = Path(workflow).expanduser().resolve()
-        workflow_bundle = rerun.load_workflow_bundle(workflow_path, server)
-        client_id = str(uuid.uuid4())
 
     for csv_path in csv_paths:
         print(f"=== {csv_path} ===")
-        process_csv(csv_path, args, rerun, workflow_bundle, client_id, system_prompt, image_system_prompt)
+        process_csv(csv_path, args, system_prompt, image_system_prompt)
 
 
 def run(config_path):
     """JSON-config-driven entry point, same convention as run_test.py/
     lora_test.py/generate_prompt_variations.py/rerun_prompts_comfyui.py/
-    extract_and_clean.py - a caller like the GUI can drive this without
-    going through argparse. Config file format:
+    extract_and_clean.py/cleaning_orchestrator.py - a caller like the GUI
+    can drive this without going through argparse. Config file format:
         {
             "csv_paths": ["...", "..."],
             "model": "...",              // optional
@@ -499,20 +443,12 @@ def run(config_path):
                                           //   affects a prompt_config that opts in
                                           //   via {STYLE} in its base text
             "overwrite": false,          // optional
-            "verbose": false,            // optional
-            "submit_to_comfyui": false,  // optional
-            "workflow": "...",           // optional, required if submit_to_comfyui
-            "server": "...",             // optional
-            "random_seed": false         // optional
+            "verbose": false              // optional
         }
     """
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     clean_all(
         csv_paths=config["csv_paths"],
-        submit_to_comfyui=config.get("submit_to_comfyui", False),
-        workflow=config.get("workflow", DEFAULT_WORKFLOW),
-        server=config.get("server", DEFAULT_COMFYUI_SERVER),
-        random_seed=config.get("random_seed", False),
         overwrite=config.get("overwrite", False),
         verbose=config.get("verbose", False),
         model=config.get("model", MODEL),
@@ -525,14 +461,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("csv_path", nargs="?", default=None,
                          help="Path to the CSV file to process (default: every *.csv file in the current directory)")
-    parser.add_argument("--submit-to-comfyui", action="store_true",
-                         help="After cleaning each row, submit the cleaned prompt to a running ComfyUI server via rerun_prompts_comfyui.py")
-    parser.add_argument("--workflow", default=DEFAULT_WORKFLOW,
-                         help=f"Workflow JSON used for every row (default: {DEFAULT_WORKFLOW})")
-    parser.add_argument("--server", default=DEFAULT_COMFYUI_SERVER,
-                         help=f"ComfyUI server URL for --submit-to-comfyui (default: {DEFAULT_COMFYUI_SERVER})")
-    parser.add_argument("--random-seed", action="store_true",
-                         help="Randomize seed/noise_seed inputs when submitting to ComfyUI")
     parser.add_argument("--overwrite", action="store_true",
                          help="Reprocess rows that already have a Cleaned Prompt value (default: skip them)")
     parser.add_argument("--model", default=MODEL, help=f"Ollama model to use (default: {MODEL})")
@@ -561,8 +489,7 @@ def main():
 
     clean_all(
         csv_paths,
-        submit_to_comfyui=args.submit_to_comfyui, workflow=args.workflow, server=args.server,
-        random_seed=args.random_seed, overwrite=args.overwrite, verbose=args.verbose, model=args.model,
+        overwrite=args.overwrite, verbose=args.verbose, model=args.model,
         prompt_config=args.prompt_config, style_config=args.style_config,
     )
 
