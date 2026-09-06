@@ -424,7 +424,12 @@ def _build_combo_sequence(aspects, vocab, multi_select, count):
     return combos
 
 
-def generate_variations(original_prompt, aspect, count, model, vocab=None, multi_select=None):
+def build_variation_request(original_prompt, aspect, count, vocab=None, multi_select=None):
+    """Builds the (system_prompt, user_prompt) pair generate_variations()
+    sends to Ollama - split out from it so a caller that just wants to see
+    (or document - see tests/test_prompt_dictionary.py) what would actually
+    be asked doesn't need to duplicate this formatting logic or make a real
+    Ollama call to get it."""
     vocab = vocab or {}
     multi_select = multi_select or {}
     aspects = parse_aspects(aspect)
@@ -475,10 +480,15 @@ def generate_variations(original_prompt, aspect, count, model, vocab=None, multi
         f"{aspect_section}\n"
         f"Number of variations: {count}"
     )
+    return SYSTEM_PROMPT, user_prompt
+
+
+def generate_variations(original_prompt, aspect, count, model, vocab=None, multi_select=None):
+    system_prompt, user_prompt = build_variation_request(original_prompt, aspect, count, vocab, multi_select)
     payload = {
         "model": model,
         "prompt": user_prompt,
-        "system": SYSTEM_PROMPT,
+        "system": system_prompt,
         "stream": False,
         # Some models (e.g. gemma4) support a hidden "thinking" pass before
         # the visible answer. Left on, they can burn the entire num_predict
