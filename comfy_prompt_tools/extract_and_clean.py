@@ -1,14 +1,14 @@
 """
-Runs extract_image_prompts.py then clean_prompts.py in one step: scan a
-directory for images, write/append one prompt CSV per folder, then ask a
-local Ollama model to clean (rewrite) each CSV's Positive Prompt column
-into a Cleaned Prompt column.
+Runs extract_image_prompts.py then cleaning_orchestrator.py in one step:
+scan a directory for images, write/append one prompt CSV per folder, then
+run the full clean -> age-verify -> content-rate pipeline (and, optionally,
+queue to ComfyUI) on each CSV.
 
 Ollama's reachability is checked up front, before anything is extracted -
 if it isn't running, this exits with an error instead of doing the
-extraction for nothing (cleaning would just fail row-by-row otherwise).
-Start it with `ollama serve` if you see that error (and make sure the
-model is pulled: `ollama pull <model>`).
+extraction for nothing (the cleaning pipeline would just fail row-by-row
+otherwise). Start it with `ollama serve` if you see that error (and make
+sure the model is pulled: `ollama pull <model>`).
 
 Usage:
     python extract_and_clean.py [directory] [-o output_dir]
@@ -32,13 +32,13 @@ Usage:
     python extract_and_clean.py "F:\\Programs\\ComfyFiles\\output\\Prompts" \\
         --submit-to-comfyui --workflow <workflow.json>
 
-Requires: everything extract_image_prompts.py and clean_prompts.py each
-require - Pillow, and Ollama running locally with the model pulled.
+Requires: everything extract_image_prompts.py and cleaning_orchestrator.py
+each require - Pillow, and Ollama running locally with the model pulled.
 
 Also exposes a run(config_path) entry point (same JSON-config convention as
 run_test.py/lora_test.py/generate_prompt_variations.py/rerun_prompts_
-comfyui.py) for driving this programmatically without argparse - used by
-funkytown-testing-harness-gui's Generations tab.
+comfyui.py/cleaning_orchestrator.py) for driving this programmatically
+without argparse - used by funkytown-testing-harness-gui's Generations tab.
 """
 
 import argparse
@@ -48,13 +48,14 @@ from pathlib import Path
 
 try:
     import clean_prompts
+    import cleaning_orchestrator
     import extract_image_prompts
 except ImportError:
-    from comfy_prompt_tools import clean_prompts, extract_image_prompts
+    from comfy_prompt_tools import clean_prompts, cleaning_orchestrator, extract_image_prompts
 
 
-def run_all(directory, output_dir=None, submit_to_comfyui=False, workflow=clean_prompts.DEFAULT_WORKFLOW,
-            server=clean_prompts.DEFAULT_COMFYUI_SERVER, random_seed=False, overwrite=False, verbose=False,
+def run_all(directory, output_dir=None, submit_to_comfyui=False, workflow=cleaning_orchestrator.DEFAULT_WORKFLOW,
+            server=cleaning_orchestrator.DEFAULT_COMFYUI_SERVER, random_seed=False, overwrite=False, verbose=False,
             model=clean_prompts.MODEL, prompt_config=None, style_config=None):
     """Core logic behind main() and run() below - callable directly by other
     callers (e.g. the GUI) without going through argparse or a JSON file."""
@@ -69,7 +70,7 @@ def run_all(directory, output_dir=None, submit_to_comfyui=False, workflow=clean_
     if not csv_paths:
         return  # extract_all() already printed why (no images found)
 
-    clean_prompts.clean_all(
+    cleaning_orchestrator.run_all(
         [str(p) for p in csv_paths],
         submit_to_comfyui=submit_to_comfyui,
         workflow=workflow,
@@ -92,8 +93,8 @@ def run(config_path):
             "directory": "...",
             "output_dir": "...",        // optional
             "model": "...",              // optional
-            "prompt_config": "...",      // optional - see clean_prompts.run()'s config docstring
-            "style_config": "...",       // optional - see clean_prompts.run()'s config docstring
+            "prompt_config": "...",      // optional - see cleaning_orchestrator.run()'s config docstring
+            "style_config": "...",       // optional - see cleaning_orchestrator.run()'s config docstring
             "overwrite": false,          // optional
             "verbose": false,            // optional
             "submit_to_comfyui": false,  // optional
@@ -107,8 +108,8 @@ def run(config_path):
         directory=config["directory"],
         output_dir=config.get("output_dir"),
         submit_to_comfyui=config.get("submit_to_comfyui", False),
-        workflow=config.get("workflow", clean_prompts.DEFAULT_WORKFLOW),
-        server=config.get("server", clean_prompts.DEFAULT_COMFYUI_SERVER),
+        workflow=config.get("workflow", cleaning_orchestrator.DEFAULT_WORKFLOW),
+        server=config.get("server", cleaning_orchestrator.DEFAULT_COMFYUI_SERVER),
         random_seed=config.get("random_seed", False),
         overwrite=config.get("overwrite", False),
         verbose=config.get("verbose", False),
@@ -131,10 +132,10 @@ def main():
     )
     parser.add_argument("--submit-to-comfyui", action="store_true",
                          help="After cleaning each row, submit the cleaned prompt to a running ComfyUI server via rerun_prompts_comfyui.py")
-    parser.add_argument("--workflow", default=clean_prompts.DEFAULT_WORKFLOW,
-                         help=f"Workflow JSON used for every row when --submit-to-comfyui is given (default: {clean_prompts.DEFAULT_WORKFLOW})")
-    parser.add_argument("--server", default=clean_prompts.DEFAULT_COMFYUI_SERVER,
-                         help=f"ComfyUI server URL for --submit-to-comfyui (default: {clean_prompts.DEFAULT_COMFYUI_SERVER})")
+    parser.add_argument("--workflow", default=cleaning_orchestrator.DEFAULT_WORKFLOW,
+                         help=f"Workflow JSON used for every row when --submit-to-comfyui is given (default: {cleaning_orchestrator.DEFAULT_WORKFLOW})")
+    parser.add_argument("--server", default=cleaning_orchestrator.DEFAULT_COMFYUI_SERVER,
+                         help=f"ComfyUI server URL for --submit-to-comfyui (default: {cleaning_orchestrator.DEFAULT_COMFYUI_SERVER})")
     parser.add_argument("--random-seed", action="store_true",
                          help="Randomize seed/noise_seed inputs when submitting to ComfyUI")
     parser.add_argument("--overwrite", action="store_true",
