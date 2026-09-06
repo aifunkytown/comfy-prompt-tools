@@ -143,15 +143,17 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   JSON-config convention as everywhere else).
 
 - **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
-  `clean_prompts.py` in one command instead of two, on whatever CSV(s) the
-  extraction step just wrote. Checks Ollama is actually reachable *before*
-  extracting anything (errors out immediately if not, rather than
-  extracting for nothing when cleaning would fail row-by-row anyway). Every
-  `clean_prompts.py` option (`--overwrite`, `-v`/`--verbose`, `--model`,
-  `--submit-to-comfyui`, `--workflow`, `--server`, `--random-seed`) is
-  accepted and passed straight through. Also exposes a `run(config_path)`
-  entry point (same JSON-config convention as `run_test.py`/`lora_test.py`/
-  `generate_prompt_variations.py`/`rerun_prompts_comfyui.py`) - used by
+  `cleaning_orchestrator.py` (clean -> verify -> rate -> optionally queue)
+  in one command instead of two, on whatever CSV(s) the extraction step
+  just wrote. Checks Ollama is actually reachable *before* extracting
+  anything (errors out immediately if not, rather than extracting for
+  nothing when the cleaning pipeline would fail row-by-row anyway). Every
+  `cleaning_orchestrator.py` option (`--overwrite`, `-v`/`--verbose`,
+  `--model`, `--submit-to-comfyui`, `--workflow`, `--server`,
+  `--random-seed`) is accepted and passed straight through. Also exposes a
+  `run(config_path)` entry point (same JSON-config convention as
+  `run_test.py`/`lora_test.py`/`generate_prompt_variations.py`/
+  `rerun_prompts_comfyui.py`) - used by
   `funkytown-testing-harness-gui`'s Generations tab.
 
 - **`generate_prompt_variations.py`** - Takes one row of a prompt CSV and asks
