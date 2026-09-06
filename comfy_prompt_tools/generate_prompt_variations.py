@@ -82,6 +82,12 @@ Usage:
     # model for text variation - the same prompt each time is then paired
     # with a different resolution per variation:
     python generate_prompt_variations.py prompts.csv 3 "hair color and resolution" 6
+
+    # Every variation is also written to match an overall visual style
+    # (Realistic, Anime, Oil Painting, ...) - the same style_<name>.json
+    # files clean_prompts.py uses (default: style_realism.json, i.e.
+    # realistic). Pass --style-config to pick a different one:
+    python generate_prompt_variations.py prompts.csv 3 "dress color" 5 --style-config style_anime.json
 """
 
 import argparse
@@ -94,6 +100,14 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# Reuse clean_prompts.py's style_<name>.json mechanism (style_realism.json,
+# style_anime.json, style_oil_painting.json, ...) instead of inventing a
+# second, separate one - see STYLE_PLACEHOLDER/build_system_prompt() below.
+try:
+    from clean_prompts import DEFAULT_STYLE_CONFIG_PATH, resolve_style_adds  # run directly: python generate_prompt_variations.py
+except ImportError:
+    from comfy_prompt_tools.clean_prompts import DEFAULT_STYLE_CONFIG_PATH, resolve_style_adds  # imported as a package
 
 # Prompt text (esp. from booru-tag sources) can contain characters outside
 # the Windows console's default codepage (e.g. cp1252) - reconfigure stdout/
@@ -122,10 +136,24 @@ def list_ollama_models(url=OLLAMA_URL, timeout=5):
 
 SEPARATOR = "===VARIATION==="
 
-SYSTEM_PROMPT = (
+# Same style-swap mechanism as clean_prompts.py - a prompt config file
+# (here, the hardcoded SYSTEM_PROMPT_BASE below) can include this literal
+# token wherever it wants the currently-selected visual style's instructions
+# substituted in. See style_realism.json/style_anime.json/style_oil_painting.
+# json for the style side of this - --style-config (CLI) / style_config
+# (generate_variations()/run_batch()/run()) picks which one, defaulting to
+# style_realism.json (DEFAULT_STYLE_CONFIG_PATH, imported from clean_prompts
+# so both scripts always agree on what "realistic" means).
+STYLE_PLACEHOLDER = "{STYLE}"
+
+SYSTEM_PROMPT_BASE = (
     "You generate variations of an image-generation prompt. You will be given "
     "an original prompt, one or more aspects of the scene to vary, and a "
     "number of variations to produce.\n\n"
+    "Every variation must also match this overall visual style throughout the "
+    "rewrite, in addition to whatever aspect(s) are named below (unless the "
+    "visual style itself is explicitly one of those named aspects): "
+    f"{STYLE_PLACEHOLDER}\n\n"
     "Each named aspect describes a CONCEPT, not necessarily an exact word or "
     "phrase already in the prompt - understand what that concept means for "
     "this specific scene and imagine a genuinely different, distinct take on "
@@ -212,6 +240,19 @@ SYSTEM_PROMPT = (
     f"Put a line containing only {SEPARATOR} immediately before each "
     f"variation (including the first one)."
 )
+
+
+def build_system_prompt(style_config=None):
+    """SYSTEM_PROMPT_BASE with STYLE_PLACEHOLDER replaced by style_config's
+    visual-style instructions (default: DEFAULT_STYLE_CONFIG_PATH, i.e.
+    realism) - same style_<name>.json files and resolve_style_adds() logic
+    clean_prompts.py uses, so a variation's writing style always matches
+    whatever the Generations tab's Clean flow would have produced for that
+    same style choice."""
+    return SYSTEM_PROMPT_BASE.replace(STYLE_PLACEHOLDER, resolve_style_adds(style_config))
+
+
+SYSTEM_PROMPT = build_system_prompt()  # default (realism) - generate_variations() rebuilds per-call when style_config is passed
 
 
 def hash_prompt(positive, negative):
@@ -424,7 +465,7 @@ def _build_combo_sequence(aspects, vocab, multi_select, count):
     return combos
 
 
-def generate_variations(original_prompt, aspect, count, model, vocab=None, multi_select=None):
+def generate_variations(original_prompt, aspect, count, model, vocab=None, multi_select=None, style_config=None):
     vocab = vocab or {}
     multi_select = multi_select or {}
     aspects = parse_aspects(aspect)
@@ -478,7 +519,7 @@ def generate_variations(original_prompt, aspect, count, model, vocab=None, multi
     payload = {
         "model": model,
         "prompt": user_prompt,
-        "system": SYSTEM_PROMPT,
+        "system": build_system_prompt(style_config),
         "stream": False,
         # Some models (e.g. gemma4) support a hidden "thinking" pass before
         # the visible answer. Left on, they can burn the entire num_predict
@@ -529,7 +570,7 @@ def _extract_variations_list(response_text):
     return variations
 
 
-def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DEFAULT_MODEL, vocab_path=None, random_aspects=None, prompt_overrides=None, aspect_values=None):
+def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DEFAULT_MODEL, vocab_path=None, random_aspects=None, prompt_overrides=None, aspect_values=None, style_config=None):
     """Core logic shared by the CLI (main()) and anything else driving this
     programmatically (e.g. the GUI's Variations tab, via run() below).
     csv_path is a Path, row_numbers a list of 1-indexed ints - not required
@@ -547,9 +588,11 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
     restrict that aspect to just those values for this run, without
     touching the vocab file itself. Only narrows an aspect the vocab file
     already defines - it's not a way to invent a new one (silently
-    ignored if the name doesn't match an existing vocab key). Raises
-    SystemExit on unrecoverable errors, same convention as run_test.py/
-    lora_test.py."""
+    ignored if the name doesn't match an existing vocab key). style_config:
+    path to a style_<name>.json (default: realism, DEFAULT_STYLE_CONFIG_PATH)
+    - same file clean_prompts.py's --style-config uses, see build_system_
+    prompt(). Raises SystemExit on unrecoverable errors, same convention as
+    run_test.py/lora_test.py."""
     vocab_path = vocab_path or DEFAULT_VOCAB_PATH
     prompt_overrides = prompt_overrides or {}
     vocab, random_exclude, multi_select, explicit_aspects = load_vocab(vocab_path)
@@ -674,7 +717,7 @@ def run_batch(csv_path, row_numbers, aspect=None, count=1, output=None, model=DE
 
             try:
                 if text_aspect:
-                    variations = generate_variations(original_prompt, text_aspect, count, model, vocab, multi_select)
+                    variations = generate_variations(original_prompt, text_aspect, count, model, vocab, multi_select, style_config)
                 else:
                     # resolution was the only requested aspect - nothing in
                     # the prompt text itself changes, so skip the LLM call
@@ -771,10 +814,12 @@ def run(config_path):
             "vocab_path": "...",                        // optional
             "output": "...",                            // optional, single-row only
             "prompt_overrides": {"100": "a new prompt for row 100"},  // optional
-            "aspect_values": {"hair color": ["red", "blue"]}  // optional - narrows a
+            "aspect_values": {"hair color": ["red", "blue"]}, // optional - narrows a
                                                               //   vocab-controlled aspect
                                                               //   to just these values
                                                               //   for this run
+            "style_config": "..."                       // optional - path to a style_<name>.json
+                                                          //   (default: style_realism.json)
         }
     "rows" takes precedence over "row" if both are present.
     """
@@ -794,6 +839,7 @@ def run(config_path):
         random_aspects=config.get("random_aspects"),
         prompt_overrides={int(k): v for k, v in config.get("prompt_overrides", {}).items()},
         aspect_values=config.get("aspect_values"),
+        style_config=config.get("style_config"),
     )
 
 
@@ -807,6 +853,7 @@ def main():
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model to use (default: {DEFAULT_MODEL})")
     parser.add_argument("--vocab", default=str(DEFAULT_VOCAB_PATH), help=f"JSON file mapping aspect name -> list of allowed values (default: {DEFAULT_VOCAB_PATH.name} next to this script, if present)")
     parser.add_argument("--random-aspects", type=int, default=None, metavar="N", help="Instead of specifying 'aspect', randomly choose N aspects from the vocab file (only aspects with a non-empty value list are eligible)")
+    parser.add_argument("--style-config", default=None, help=f"Path to a style_<name>.json (default: {DEFAULT_STYLE_CONFIG_PATH.name}) - the overall visual style (realistic, anime, oil painting, ...) every variation is written to match, same style_<name>.json files clean_prompts.py's --style-config uses")
     args = parser.parse_args()
 
     run_batch(
@@ -818,6 +865,7 @@ def main():
         model=args.model,
         vocab_path=args.vocab,
         random_aspects=args.random_aspects,
+        style_config=args.style_config,
     )
 
 
