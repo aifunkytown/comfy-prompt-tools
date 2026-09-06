@@ -109,6 +109,22 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   `rate_prompts.json` (checked in), `rate_prompts.local.json` next to it
   can append personal instructions.
 
+- **`verify_prompt_ages.py`** - Second-pass safety net for `clean_prompts.py`'s
+  age requirement (every person/humanoid subject must have an explicit
+  numeric age of at least 20 stated, 35 if mature/older, regardless of
+  whether the image is explicit - see `clean_prompts.json`). Re-sends each
+  row's `Cleaned Prompt` to a local Ollama model to check that requirement
+  is actually met; if it is, the text comes back unchanged, otherwise just
+  enough is rewritten to add/correct the age(s), leaving everything else
+  untouched. Marks `Age Verified` = `yes` per row (skipped on a re-run
+  unless `--overwrite`) plus a short `Age Verification Note`. Exists to
+  backfill CSVs cleaned before this policy existed, or catch a model not
+  following its own system prompt - not a replacement for
+  `clean_prompts.py`'s own age instructions, which do the real work on a
+  normal cleaning pass. Same refusal-retry/permanent-`ERROR` handling as
+  `clean_prompts.py`/`rate_prompts.py`; same base/local system-prompt split
+  (`verify_prompt_ages.json` + `verify_prompt_ages.local.json`).
+
 - **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
   `clean_prompts.py` in one command instead of two, on whatever CSV(s) the
   extraction step just wrote. Checks Ollama is actually reachable *before*
