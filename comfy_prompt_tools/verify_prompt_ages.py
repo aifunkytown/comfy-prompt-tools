@@ -274,6 +274,16 @@ def process_csv(csv_path, args):
         print("Nothing to do - every row already verified or has nothing to verify (use --overwrite to redo them).")
 
 
+def verify_all(csv_paths, model=MODEL, overwrite=False):
+    """Core logic behind main() - process an explicit list of CSV paths
+    without going through argparse. Callable directly by other scripts
+    (e.g. clean_and_rate.py)."""
+    args = argparse.Namespace(model=model, overwrite=overwrite)
+    for csv_path in csv_paths:
+        print(f"=== {csv_path} ===")
+        process_csv(csv_path, args)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("csv_path", nargs="?", default=None,
@@ -291,9 +301,7 @@ def main():
             print("No CSV files found in the current directory.", file=sys.stderr)
             sys.exit(1)
 
-    for csv_path in csv_paths:
-        print(f"=== {csv_path} ===")
-        process_csv(csv_path, args)
+    verify_all(csv_paths, model=args.model, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":
