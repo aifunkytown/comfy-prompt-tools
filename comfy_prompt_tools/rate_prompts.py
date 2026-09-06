@@ -286,7 +286,7 @@ def process_csv(csv_path, args):
 def rate_all(csv_paths, model=MODEL, overwrite=False):
     """Core logic behind main() - process an explicit list of CSV paths
     without going through argparse. Callable directly by other scripts
-    (e.g. clean_and_rate.py)."""
+    (e.g. cleaning_orchestrator.py)."""
     args = argparse.Namespace(model=model, overwrite=overwrite)
     for csv_path in csv_paths:
         print(f"=== {csv_path} ===")
