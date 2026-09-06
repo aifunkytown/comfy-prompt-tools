@@ -80,34 +80,30 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   so a later re-run recognizes it and repeats the *image* fallback instead
   of feeding that marker through the text-rewrite model as if it were a
   real prompt - the actual description lives in `Cleaned Prompt`, never
-  cleaned twice. Each row is also content-rated in that same Ollama call,
-  using `rate_prompts.py`'s rubric - see below - so rating never costs a
-  second round trip over the same text. Can optionally submit each cleaned
-  prompt straight to ComfyUI as it's cleaned (`--submit-to-comfyui`),
-  routing keyword-matched LoRAs on automatically (see
-  `rerun_prompts_comfyui.py`'s `lora_rules.json`). Its system prompts are
-  likewise split base/local - both the text-rewrite prompt and the
-  image-description prompt live in `clean_prompts.json` (checked in, edit
-  them there rather than in code), and `clean_prompts.local.json` next to it
-  can append personal instructions onto the text-rewrite one. Also exposes
-  a `run(config_path)` entry point (same JSON-config convention as
-  `run_test.py`/`lora_test.py`/`generate_prompt_variations.py`/
-  `rerun_prompts_comfyui.py`/`extract_and_clean.py`) - used by
-  `funkytown-testing-harness-gui`'s Generations tab.
+  cleaned twice. Has no notion of content rating at all - see
+  `rate_prompts.py`/`verify_prompt_ages.py` below, or `clean_and_rate.py` to
+  run all three together. Can optionally submit each cleaned prompt straight
+  to ComfyUI as it's cleaned (`--submit-to-comfyui`), routing keyword-matched
+  LoRAs on automatically (see `rerun_prompts_comfyui.py`'s `lora_rules.json`).
+  Its system prompts are likewise split base/local - both the text-rewrite
+  prompt and the image-description prompt live in `clean_prompts.json`
+  (checked in, edit them there rather than in code), and
+  `clean_prompts.local.json` next to it can append personal instructions
+  onto the text-rewrite one. Also exposes a `run(config_path)` entry point
+  (same JSON-config convention as `run_test.py`/`lora_test.py`/
+  `generate_prompt_variations.py`/`rerun_prompts_comfyui.py`/
+  `extract_and_clean.py`/`clean_and_rate.py`).
 
 - **`rate_prompts.py`** - Content-rates a prompt CSV on a movie-style scale
   (`G`/`PG`/`PG-13`/`R`/`X`/`XXX`, or `REVIEW` for suspected underage
   content) via a local Ollama model, writing `Content Rating` and `Rating
   Reason` columns - rates `Cleaned Prompt` when present, falling back to
   `Positive Prompt` otherwise (matching what actually gets sent to
-  ComfyUI). `clean_prompts.py` already calls this rubric inline as part of
-  its own Ollama call, so a CSV it just produced is already rated - run
-  this script directly only to backfill ratings on a CSV that predates that
-  integration, was hand-edited afterward, or never went through
-  `clean_prompts.py` at all (e.g. a `generate_prompt_variations.py` CSV).
-  Same base/local split as everywhere else: the rubric lives in
-  `rate_prompts.json` (checked in), `rate_prompts.local.json` next to it
-  can append personal instructions.
+  ComfyUI). Has no notion of cleaning at all - run it directly to rate any
+  CSV with prompt text, cleaned or not, or use `clean_and_rate.py` to clean
+  and rate together. Same base/local split as everywhere else: the rubric
+  lives in `rate_prompts.json` (checked in), `rate_prompts.local.json` next
+  to it can append personal instructions.
 
 - **`verify_prompt_ages.py`** - Second-pass safety net for `clean_prompts.py`'s
   age requirement (every person/humanoid subject must have an explicit
@@ -124,6 +120,19 @@ pass the equivalent CLI flag, where available) to point at your own setup.
   normal cleaning pass. Same refusal-retry/permanent-`ERROR` handling as
   `clean_prompts.py`/`rate_prompts.py`; same base/local system-prompt split
   (`verify_prompt_ages.json` + `verify_prompt_ages.local.json`).
+
+- **`clean_and_rate.py`** - Runs `clean_prompts.py`, then
+  `verify_prompt_ages.py`, then `rate_prompts.py` in one command, on the
+  same CSV(s). Age-verification runs before rating (not after) so a row's
+  `Content Rating` reflects its actually-final `Cleaned Prompt` - this also
+  matters for correctness: `rate_prompts.json`'s `REVIEW` exception for an
+  explicitly stated adult age only works if that age is already present in
+  the text being rated. None of the three scripts know about each other -
+  this is what chains them together; each remains fully usable on its own
+  too. Uses the same model and `--overwrite` for all three stages - call
+  the individual scripts directly instead if a stage needs its own model or
+  independent overwrite behavior. Also exposes a `run(config_path)` entry
+  point (same JSON-config convention as everywhere else).
 
 - **`extract_and_clean.py`** - Runs `extract_image_prompts.py` then
   `clean_prompts.py` in one command instead of two, on whatever CSV(s) the
